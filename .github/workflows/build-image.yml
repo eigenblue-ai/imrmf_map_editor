@@ -1,0 +1,68 @@
+name: build-image
+
+# Bazel-builds the server + wasm app, then pushes the runtime image to GHCR.
+# First run is slow (rules_ros2 + emscripten); the caches below speed it up.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bazel cache
+        uses: bazel-contrib/setup-bazel@0.9.1
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Build server
+        run: bazel build //server_rust:imrmf_map_editor
+
+      - name: Build wasm app
+        run: bazel build --config=wasm //app:editor_wasm
+
+      # bazel-bin is a symlink tree; copy real files so docker can COPY them.
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist/server_rust dist/app
+          cp -RL bazel-bin/server_rust/imrmf_map_editor dist/server_rust/
+          # tar -h to flatten the nested runfiles symlinks
+          tar -C bazel-bin/server_rust -chf - imrmf_map_editor.runfiles \
+            | tar -xf - -C dist/server_rust
+          cp -RL bazel-bin/app/editor_wasm dist/app/
+
+      - name: Lowercase image name
+        id: img
+        run: echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}

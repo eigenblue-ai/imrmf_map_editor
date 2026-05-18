@@ -1,0 +1,55 @@
+load("@imrmf_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+
+package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "building_map",
+    srcs = glob([
+        "building_map/*.py",
+        "building_map/doors/*.py",
+    ]),
+    imports = ["."],
+    deps = [
+        requirement("PyYAML"),
+        requirement("numpy"),
+    ],
+)
+
+py_library(
+    name = "building_map_generator_lib",
+    srcs = glob(["building_map_generator/*.py"]),
+    imports = ["."],
+    deps = [
+        ":building_map",
+        requirement("PyYAML"),
+    ],
+)
+
+py_binary(
+    name = "building_map_generator_bin",
+    srcs = ["building_map_generator/building_map_generator.py"],
+    main = "building_map_generator/building_map_generator.py",
+    deps = [":building_map_generator_lib"],
+)
+
+py_library(
+    name = "building_map_server_lib",
+    srcs = glob(["building_map_server/*.py"]),
+    imports = ["."],
+    deps = [
+        ":building_map",
+        requirement("PyYAML"),
+        requirement("numpy"),
+        "@rmf_building_map_msgs//:py_rmf_building_map_msgs",
+        "@rmf_site_map_msgs//:py_rmf_site_map_msgs",
+        "@ros2_rclpy//:rclpy",
+    ],
+)
+
+py_binary(
+    name = "building_map_server_bin",
+    srcs = ["building_map_server/building_map_server.py"],
+    main = "building_map_server/building_map_server.py",
+    deps = [":building_map_server_lib"],
+)

@@ -1,0 +1,17 @@
+ImRmfMapEditor
+Copyright (c) 2026 The ImRmfMapEditor Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by third parties. Their licenses
+and attributions are listed in THIRD_PARTY_LICENSES.md.
+
+This product is compatible with, but is not affiliated with or endorsed by,
+the Open Source Robotics Foundation or the Open-RMF project. The
+`building.yaml` schema and the `[type_code, value]` parameter wire format
+are documented by the upstream open-rmf/rmf_traffic_editor project.
+
+Files under third_party/ are derived from upstream open-rmf/rmf_traffic_editor
+(commit cd6bf2b49f0f6c8fd9decbfe07a8e97be27533f9). Modifications applied at
+build time are recorded in third_party/patches/ and the patched files carry
+an in-file modification notice.

@@ -1,0 +1,60 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+_SERVER_SRCS = [
+    "src/main.rs",
+    "src/server.rs",
+    "src/state.rs",
+    "src/storage/mod.rs",
+    "src/storage/local.rs",
+    "src/storage/s3.rs",
+    "src/sync.rs",
+    "src/validate.rs",
+    "src/yaml_bridge.rs",
+]
+
+_SERVER_DEPS = [
+    "@crates//:anyhow",
+    "@crates//:aws-config",
+    "@crates//:aws-credential-types",
+    "@crates//:aws-sdk-s3",
+    "@crates//:axum",
+    "@crates//:bytes",
+    "@crates//:clap",
+    "@crates//:futures",
+    "@crates//:futures-util",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:serde_yaml",
+    "@crates//:tempfile",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tower-http",
+    "@crates//:tracing",
+    "@crates//:tracing-subscriber",
+    "@crates//:yrs",
+]
+
+_SERVER_PROC_MACRO_DEPS = ["@crates//:async-trait"]
+
+rust_binary(
+    name = "imrmf_map_editor",
+    srcs = _SERVER_SRCS,
+    data = [
+        "@rmf_building_map_tools//:building_map_generator_bin",
+        "@rmf_building_map_tools//:building_map_server_bin",
+    ],
+    edition = "2021",
+    proc_macro_deps = _SERVER_PROC_MACRO_DEPS,
+    deps = _SERVER_DEPS,
+)
+
+rust_test(
+    name = "yaml_bridge_test",
+    srcs = _SERVER_SRCS,
+    crate_root = "src/main.rs",
+    edition = "2021",
+    proc_macro_deps = _SERVER_PROC_MACRO_DEPS,
+    deps = _SERVER_DEPS,
+)

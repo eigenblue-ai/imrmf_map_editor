@@ -1,0 +1,52 @@
+load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_binary(
+    name = "editor_wasm_target",
+    srcs = ["main.cpp"],
+    additional_linker_inputs = select({
+        "//config:wasm": ["shell_minimal.html"],
+        "//conditions:default": [],
+    }),
+    copts = select({
+        "//config:wasm": ["-DImDrawIdx=unsigned"],
+        "//conditions:default": [],
+    }),
+    data = select({
+        "//config:wasm": ["shell_minimal.html"],
+        "//conditions:default": [],
+    }),
+    linkopts = select({
+        "//config:wasm": [
+            "--oformat=html",
+            "--shell-file=$(location shell_minimal.html)",
+            "-sUSE_GLFW=3",
+            "-sUSE_WEBGL2=1",
+            "-sFULL_ES3=1",
+            "-sALLOW_MEMORY_GROWTH=1",
+            "-sFETCH=1",
+            "-sFORCE_FILESYSTEM=1",
+            "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
+            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_layer_decoded",
+        ],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = select({
+        "//config:wasm": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//model",
+        "//view",
+        "@imgui_docking//:imgui",
+        "@imgui_docking//:platform-glfw",
+        "@imgui_docking//:renderer-opengl3",
+    ],
+)
+
+wasm_cc_binary(
+    name = "editor_wasm",
+    cc_target = ":editor_wasm_target",
+)
