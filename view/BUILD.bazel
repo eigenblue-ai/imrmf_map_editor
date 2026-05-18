@@ -1,0 +1,20 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "view",
+    srcs = ["editor_view.cpp"],
+    hdrs = ["editor_view.hpp"],
+    target_compatible_with = select({
+        "//config:wasm": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    deps = [
+        "//canvas",
+        "//canvas:http_texture_provider",
+        "//model",
+        "@imgui_docking//:imgui",
+        "@imgui_docking//:imgui_stdlib",
+    ],
+)

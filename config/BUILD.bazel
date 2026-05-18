@@ -1,0 +1,6 @@
+package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "wasm",
+    define_values = {"wasm": "true"},
+)

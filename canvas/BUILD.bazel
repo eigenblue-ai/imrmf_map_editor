@@ -1,0 +1,56 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "canvas",
+    srcs = [
+        "canvas.cpp",
+        "overlays.cpp",
+    ],
+    hdrs = [
+        "canvas.hpp",
+        "overlays.hpp",
+    ],
+    linkopts = select({
+        "//config:wasm": [],
+        "//conditions:default": ["-lGL"],
+    }),
+    strip_include_prefix = "/",
+    deps = [
+        "//model",
+        "@imgui_docking//:imgui",
+    ],
+)
+
+cc_library(
+    name = "http_texture_provider",
+    srcs = ["http_texture_provider.cpp"] + select({
+        "//config:wasm": [],
+        "//conditions:default": ["stb_image.h"],
+    }),
+    hdrs = ["http_texture_provider.hpp"],
+    linkopts = select({
+        "//config:wasm": [],
+        "//conditions:default": ["-lGL"],
+    }),
+    strip_include_prefix = "/",
+    deps = [":canvas"] + select({
+        "//config:wasm": [],
+        "//conditions:default": ["@curl"],
+    }),
+)
+
+cc_library(
+    name = "stb_texture_provider",
+    srcs = [
+        "stb_image.h",
+        "stb_texture_provider.cpp",
+    ],
+    hdrs = ["stb_texture_provider.hpp"],
+    linkopts = select({
+        "//config:wasm": [],
+        "//conditions:default": ["-lGL"],
+    }),
+    deps = [":canvas"],
+)

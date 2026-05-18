@@ -1,0 +1,19 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "model",
+    srcs = [
+        "building.cpp",
+        "yaml_io.cpp",
+    ],
+    hdrs = [
+        "building.hpp",
+        "yaml_io.hpp",
+    ],
+    strip_include_prefix = "/",
+    deps = [
+        "@yaml-cpp",
+    ],
+)

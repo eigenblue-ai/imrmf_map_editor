@@ -1,0 +1,29 @@
+startup --output_base=../.bazel_output_imrmf
+
+build --noincompatible_sandbox_hermetic_tmp
+build --incompatible_default_to_explicit_init_py
+build --cxxopt=-std=c++17
+build --sandbox_default_allow_network=false
+
+common --action_env=PYTHONNOUSERSITE=1
+common --incompatible_strict_action_env
+build --heap_dump_on_oom
+build --noexperimental_check_output_files
+
+test --build_tests_only
+test --test_output=errors
+build --verbose_failures
+
+build --incompatible_enable_cc_toolchain_resolution
+
+# Needed for `crate = use_extension(..., isolate=True)` in MODULE.bazel —
+# avoids the "two crate universes with same name" conflict when imrmf is
+# pulled in as a local_path_override from a parent module (dnd/).
+common --experimental_isolated_extension_usages
+
+build:wasm --define=wasm=true
+build:wasm --copt=-fexceptions
+build:wasm --linkopt=-fexceptions
+build:wasm --linkopt=-sDISABLE_EXCEPTION_CATCHING=0
+
+try-import %workspace%/user.bazelrc

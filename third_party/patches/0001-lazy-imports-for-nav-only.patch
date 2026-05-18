@@ -1,0 +1,177 @@
+--- a/building_map/building.py
++++ b/building_map/building.py
+@@ -1,31 +1,57 @@
++# Modified by The ImRmfMapEditor Authors from upstream
++# open-rmf/rmf_traffic_editor. See
++# third_party/patches/0001-lazy-imports-for-nav-only.patch for the change set.
+-import fiona
+ import gzip
+ import json
+ import math
+ import numpy as np
+ import os
+-import requests
+ import sqlite3
+ import tempfile
+ import yaml
+ 
+-from ament_index_python.packages import get_package_share_directory
+-from pyproj import Transformer
+-from pyproj.crs import CRS
++# lazy: heavy / system-dependent imports made lazy. The unpatched upstream
++# eagerly imports fiona (needs GDAL), requests, pyproj (needs PROJ), and
++# ament_index_python (ROS-only). For the `nav` codepath we don't need any of
++# these — only `gazebo`, `geopackage`, and wgs84/web_mercator coordinate
++# systems do. Failing imports become `None` here; the methods that try to
++# *use* them will raise on access.
++try:
++    import fiona
++except ImportError:  # pragma: no cover
++    fiona = None
++try:
++    import requests
++except ImportError:  # pragma: no cover
++    requests = None
++try:
++    from ament_index_python.packages import get_package_share_directory
++except ImportError:  # pragma: no cover
++    def get_package_share_directory(name):
++        raise ImportError(
++            f"ament_index_python is not available; cannot resolve share "
++            f"directory for package '{name}'. Install ROS 2 + "
++            f"ament_index_python if you need SDF/gazebo generation."
++        )
++try:
++    from pyproj import Transformer
++    from pyproj.crs import CRS
++except ImportError:  # pragma: no cover
++    Transformer = None
++    CRS = None
+ from xml.etree.ElementTree import Element, ElementTree, SubElement, parse
+ 
+ from .coordinate_system import CoordinateSystem
+ from .edge_type import EdgeType
+ from .etree_utils import indent_etree
+-from .geopackage import GeoPackage
++# lazy: geopackage / material_utils / web_mercator / wgs84 are pulled in
++# only inside the methods that need them, so importing building_map.building
++# doesn't drag fiona/pyproj/etc. transitively.
+ from .level import Level
+ from .lift import Lift
+-from .material_utils import copy_texture
+ from .param_value import ParamValue
+ from .passthrough_transform import PassthroughTransform
+ from .vertex import Vertex
+-from .web_mercator_transform import WebMercatorTransform
+-from .wgs84_transform import WGS84Transform
+ 
+ 
+ class Building:
+@@ -67,6 +90,8 @@
+                 raise ValueError('generate_crs must be defined for global nav')
+ 
+             crs_name = self.params['generate_crs'].value
++            # lazy: lazy import — pulls in pyproj.
++            from .web_mercator_transform import WebMercatorTransform
+             self.global_transform = WebMercatorTransform(crs_name)
+ 
+             origin_name = 'origin'
+@@ -124,6 +149,8 @@
+             else:
+                 offset_y = 0
+ 
++            # lazy: lazy import — pulls in pyproj.
++            from .wgs84_transform import WGS84Transform
+             self.global_transform = \
+                 WGS84Transform(crs_name, (offset_x, offset_y))
+ 
+@@ -650,6 +677,8 @@
+             f.write('illum 2\n')  # illumination model (enum)
+             f.write(f'map_Kd {texture_filename}\n')
+ 
++        # lazy: lazy import — pulls in ament_index_python (ROS).
++        from .material_utils import copy_texture
+         copy_texture('arrows', meshes_path)
+ 
+         config_ele = Element('model')
+@@ -756,6 +785,8 @@
+         return b
+ 
+     def generate_geopackage_file(self, gpkg_filename):
++        # lazy: lazy import — pulls in fiona (GDAL) and sqlite3.
++        from .geopackage import GeoPackage
+         print(f'generating GeoPackage in {gpkg_filename}')
+         edge_schema = {
+             'geometry': 'LineString',
+--- a/building_map/level.py
++++ b/building_map/level.py
+@@ -6,9 +6,22 @@
+ 
+ from xml.etree.ElementTree import ElementTree, Element, SubElement
+ from .etree_utils import indent_etree
+-import rtree
++# lazy: rtree (needs libspatialindex) is only used by spatial-lookup
++# helpers; the `nav` codepath never reaches them. Make it lazy.
++try:
++    import rtree
++except ImportError:  # pragma: no cover
++    rtree = None
+ 
+-from ament_index_python.packages import get_package_share_directory
++# lazy: ament_index_python (ROS) is only used by SDF / texture paths.
++try:
++    from ament_index_python.packages import get_package_share_directory
++except ImportError:  # pragma: no cover
++    def get_package_share_directory(name):
++        raise ImportError(
++            f"ament_index_python is not available; cannot resolve share "
++            f"directory for package '{name}'."
++        )
+ from .edge import Edge
+ from .edge_type import EdgeType
+ from .fiducial import Fiducial
+--- a/building_map/material_utils.py
++++ b/building_map/material_utils.py
+@@ -1,8 +1,22 @@
+ import os
+-import requests
+ import shutil
+ 
+-from ament_index_python.packages import get_package_share_directory
++# lazy: heavy / ROS-only imports made lazy so `from .material_utils import
++# copy_texture` etc. at module load time doesn't require requests or
++# ament_index_python. The functions that *use* these still get the symbols at
++# call time.
++try:
++    import requests
++except ImportError:  # pragma: no cover
++    requests = None
++try:
++    from ament_index_python.packages import get_package_share_directory
++except ImportError:  # pragma: no cover
++    def get_package_share_directory(name):
++        raise ImportError(
++            f"ament_index_python is not available; cannot resolve share "
++            f"directory for package '{name}'."
++        )
+ from urllib.parse import urlparse
+ from xml.etree.ElementTree import ElementTree, Element, SubElement
+ 
+--- a/building_map/floor.py
++++ b/building_map/floor.py
+@@ -1,8 +1,13 @@
+ import math
+ import os
+ 
+-import shapely.geometry
+-import shapely.ops
++# lazy: shapely is only used by SDF / floor triangulation; not needed by
++# the `nav` codepath. Make it lazy.
++try:
++    import shapely.geometry
++    import shapely.ops
++except ImportError:  # pragma: no cover
++    shapely = None
+ 
+ from xml.etree.ElementTree import SubElement
+ 

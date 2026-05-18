@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ImRmfMapEditor</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0e0f14;
+        color: #ddd;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        outline: none;
+      }
+      #output {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas
+      id="canvas"
+      oncontextmenu="event.preventDefault()"
+      tabindex="-1"
+    ></canvas>
+    <div id="output"></div>
+
+    <script>
+      var Module = {
+        canvas: document.getElementById("canvas"),
+        print: function (t) {
+          console.log(t);
+        },
+        printErr: function (t) {
+          console.error(t);
+        },
+      };
+    </script>
+
+    <script type="importmap">
+      { "imports": { "yjs": "https://esm.sh/yjs@13.6.18" } }
+    </script>
+
+    <script type="module">
+      // imrmf: client-side bridge between the wasm UI and the server.
+      //
+      // Three responsibilities:
+      //   1. Storage mount/unmount HTTP calls.
+      //   2. Yjs CRDT connection lifecycle. Lazy-loaded so a page that never
+      //      connects doesn't pay the network cost for yjs + y-websocket.
+      //   3. sessionStorage roundtrip for the active connection blob so reloads
+      //      skip the modal.
+
+      const SESSION_KEY = "imrmf.connection";
+      const yjsApi = makeStubApi();
+      const imrmf = {
+        yjs: yjsApi,
+        _provider: null,
+        _doc: null,
+        _libs: null,
+        _connection: null,
+
+        getSession() {
+          const raw = sessionStorage.getItem(SESSION_KEY);
+          if (!raw) return null;
+          try {
+            return JSON.parse(raw);
+          } catch (_) {
+            return null;
+          }
+        },
+        saveSession(obj) {
+          sessionStorage.setItem(SESSION_KEY, JSON.stringify(obj));
+        },
+        clearSession() {
+          sessionStorage.removeItem(SESSION_KEY);
+        },
+
+        async mount(serverUrl, config) {
+          const r = await fetch(joinUrl(serverUrl, "/mount"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(config),
+          });
+          if (!r.ok) throw new Error("mount failed: " + (await r.text()));
+          return r.json();
+        },
+        async fetchConfig(serverUrl) {
+          try {
+            const r = await fetch(joinUrl(serverUrl, "/config"));
+            if (!r.ok) return null;
+            return r.json();
+          } catch (_) {
+            return null;
+          }
+        },
+        async listBuildings(serverUrl) {
+          const r = await fetch(joinUrl(serverUrl, "/buildings"));
+          if (!r.ok)
+            throw new Error("list buildings failed: " + (await r.text()));
+          return r.json();
+        },
+        async unmount(serverUrl) {
+          await fetch(joinUrl(serverUrl, "/unmount"), { method: "POST" });
+        },
+        async loadBuilding(serverUrl, buildingId) {
+          const r = await fetch(
+            joinUrl(
+              serverUrl,
+              "/buildings/" + encodeURIComponent(buildingId) + "/load",
+            ),
+            {
+              method: "POST",
+            },
+          );
+          if (!r.ok) throw new Error("load failed: " + (await r.text()));
+        },
+        async mountStatus(serverUrl) {
+          const r = await fetch(joinUrl(serverUrl, "/mount/status"));
+          return r.json();
+        },
+
+        async connect(serverUrl, buildingId) {
+          if (!this._libs) {
+            const [Y, ywebsocket, jsyaml] = await Promise.all([
+              import("https://esm.sh/yjs@13.6.18"),
+              import("https://esm.sh/y-websocket@2.0.4?external=yjs"),
+              import("https://esm.sh/js-yaml@4.1.0"),
+            ]);
+            this._libs = {
+              Y,
+              WebsocketProvider: ywebsocket.WebsocketProvider,
+              jsyaml: jsyaml.default || jsyaml,
+            };
+          }
+          const { Y, WebsocketProvider, jsyaml } = this._libs;
+          const wsBase = wsUrlFor(serverUrl);
+          const doc = new Y.Doc();
+          const provider = new WebsocketProvider(wsBase, buildingId, doc);
+          const buildingMap = doc.getMap("building");
+
+          let connectStatus = "connecting";
+          let syncComplete = false;
+          let remoteDirty = false;
+          provider.on("status", (e) => {
+            connectStatus = e.status;
+          });
+          provider.on("sync", (isSynced) => {
+            syncComplete = isSynced;
+            if (isSynced) remoteDirty = true;
+          });
+          buildingMap.observeDeep((events, txn) => {
+            if (txn && txn.origin === "local") return;
+            remoteDirty = true;
+          });
+
+          Object.assign(
+            this.yjs,
+            buildApi({
+              Y,
+              jsyaml,
+              doc,
+              buildingMap,
+              getStatus: () => connectStatus,
+              isSynced: () => syncComplete,
+              isRemoteDirty: () => remoteDirty,
+              clearRemoteDirty: () => {
+                remoteDirty = false;
+              },
+            }),
+          );
+
+          this._provider = provider;
+          this._doc = doc;
+          this._connection = { serverUrl, buildingId };
+          await new Promise((resolve) => {
+            if (syncComplete) return resolve();
+            const handler = (isSynced) => {
+              if (isSynced) {
+                provider.off("sync", handler);
+                resolve();
+              }
+            };
+            provider.on("sync", handler);
+          });
+        },
+
+        disconnect() {
+          if (this._provider) {
+            try {
+              this._provider.destroy();
+            } catch (_) {}
+          }
+          if (this._doc) {
+            try {
+              this._doc.destroy();
+            } catch (_) {}
+          }
+          this._provider = null;
+          this._doc = null;
+          this._connection = null;
+          Object.assign(this.yjs, makeStubApi());
+        },
+
+        isConnected() {
+          return this._provider !== null;
+        },
+        currentConnection() {
+          return this._connection;
+        },
+      };
+
+      function joinUrl(base, path) {
+        if (!base) return path;
+        return base.replace(/\/+$/, "") + path;
+      }
+
+      function wsUrlFor(httpUrl) {
+        let u = httpUrl;
+        if (!u || u.startsWith("/")) u = location.origin + (u || "");
+        return u.replace(/^http/, "ws").replace(/\/+$/, "") + "/ws";
+      }
+
+      function makeStubApi() {
+        return {
+          getStatus: () => "disconnected",
+          isSynced: () => false,
+          isRemoteDirty: () => false,
+          clearRemoteDirty: () => {},
+          snapshotYaml: () => "",
+          applyLocalYaml: () => {},
+          vertexAdd: () => {},
+          vertexReplace: () => {},
+          vertexDelete: () => {},
+          laneAdd: () => {},
+          laneReplace: () => {},
+          laneDelete: () => {},
+          layerSet: () => {},
+          layerDelete: () => {},
+          layerReorder: () => {},
+          undo: () => {},
+          redo: () => {},
+          canUndo: () => false,
+          canRedo: () => false,
+        };
+      }
+
+      function buildApi({
+        Y,
+        jsyaml,
+        doc,
+        buildingMap,
+        getStatus,
+        isSynced,
+        isRemoteDirty,
+        clearRemoteDirty,
+      }) {
+        // js-yaml can't dump BigInts, Maps, or Sets. Yjs surfaces integer-typed
+        // values as JS bigint here, so we demote to Number before dump.
+        function toPlain(value) {
+          if (value === null || typeof value === "undefined") return value;
+          if (typeof value === "bigint") return Number(value);
+          if (typeof value !== "object") return value;
+          if (value instanceof Map) {
+            const o = {};
+            for (const [k, v] of value) o[k] = toPlain(v);
+            return o;
+          }
+          if (value instanceof Set) return Array.from(value, toPlain);
+          if (Array.isArray(value)) return value.map(toPlain);
+          const o = {};
+          for (const [k, v] of Object.entries(value)) o[k] = toPlain(v);
+          return o;
+        }
+
+        function setKey(parent, key, value) {
+          if (value === null || typeof value !== "object") {
+            parent.set(key, value);
+            return;
+          }
+          if (Array.isArray(value)) {
+            const a = new Y.Array();
+            parent.set(key, a);
+            fillArr(a, value);
+            return;
+          }
+          const m = new Y.Map();
+          parent.set(key, m);
+          for (const [kk, vv] of Object.entries(value)) setKey(m, kk, vv);
+        }
+        function fillArr(arr, source) {
+          for (const v of source) {
+            if (v === null || typeof v !== "object") {
+              arr.push([v]);
+            } else if (Array.isArray(v)) {
+              const a = new Y.Array();
+              arr.push([a]);
+              fillArr(a, v);
+            } else {
+              const m = new Y.Map();
+              arr.push([m]);
+              for (const [k, vv] of Object.entries(v)) setKey(m, k, vv);
+            }
+          }
+        }
+        function rebuildMap(target, source) {
+          for (const k of Array.from(target.keys())) target.delete(k);
+          if (!source || typeof source !== "object") return;
+          for (const [k, v] of Object.entries(source)) setKey(target, k, v);
+        }
+        function getOrCreateMap(parent, key) {
+          let m = parent.get(key);
+          if (!m) {
+            m = new Y.Map();
+            parent.set(key, m);
+          }
+          return m;
+        }
+        function getOrCreateArr(parent, key) {
+          let a = parent.get(key);
+          if (!a) {
+            a = new Y.Array();
+            parent.set(key, a);
+          }
+          return a;
+        }
+        function getLevel(name) {
+          const levels = getOrCreateMap(buildingMap, "levels");
+          return getOrCreateMap(levels, name);
+        }
+        function attachArrayInto(parent, idx, parsedArr) {
+          const a = new Y.Array();
+          if (idx < 0 || idx >= parent.length) parent.push([a]);
+          else parent.insert(idx, [a]);
+          fillArr(a, parsedArr);
+          return a;
+        }
+        function attachMapInto(parent, key, parsedObj) {
+          if (parent.has(key)) parent.delete(key);
+          const m = new Y.Map();
+          parent.set(key, m);
+          for (const [k, v] of Object.entries(parsedObj)) setKey(m, k, v);
+          return m;
+        }
+        function parseYamlOrLog(yamlStr, what) {
+          try {
+            return jsyaml.load(yamlStr);
+          } catch (e) {
+            console.error("[imrmf] parse", what, "failed:", e);
+            return null;
+          }
+        }
+
+        function snapshotYaml() {
+          return jsyaml.dump(toPlain(buildingMap.toJSON()));
+        }
+        function applyLocalYaml(yamlStr) {
+          let obj;
+          try {
+            obj = jsyaml.load(yamlStr);
+          } catch (e) {
+            console.error("[imrmf] local YAML parse failed:", e);
+            return;
+          }
+          if (!obj || typeof obj !== "object") return;
+          doc.transact(() => rebuildMap(buildingMap, obj), "local");
+        }
+
+        function vertexAdd(levelName, vertexYaml) {
+          const parsed = parseYamlOrLog(vertexYaml, "vertex");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const vertices = getOrCreateArr(getLevel(levelName), "vertices");
+            attachArrayInto(vertices, vertices.length, parsed);
+          }, "local");
+        }
+        function vertexReplace(levelName, idx, vertexYaml) {
+          const parsed = parseYamlOrLog(vertexYaml, "vertex");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const vertices = getLevel(levelName).get("vertices");
+            if (!vertices || idx < 0 || idx >= vertices.length) return;
+            vertices.delete(idx, 1);
+            attachArrayInto(vertices, idx, parsed);
+          }, "local");
+        }
+        function vertexDelete(levelName, idx) {
+          doc.transact(() => {
+            const level = getLevel(levelName);
+            const vertices = level.get("vertices");
+            if (!vertices || idx < 0 || idx >= vertices.length) return;
+            vertices.delete(idx, 1);
+            const lanes = level.get("lanes");
+            if (!lanes) return;
+            for (let i = lanes.length - 1; i >= 0; --i) {
+              const lane = lanes.get(i);
+              if (!(lane instanceof Y.Array)) continue;
+              const s = lane.get(0),
+                e = lane.get(1);
+              if (s === idx || e === idx) {
+                lanes.delete(i, 1);
+              } else if (s > idx || e > idx) {
+                const ns = s > idx ? s - 1 : s;
+                const ne = e > idx ? e - 1 : e;
+                let params = null;
+                if (lane.length >= 3) {
+                  const p = lane.get(2);
+                  params = p && p.toJSON ? p.toJSON() : p;
+                }
+                const replacement = [ns, ne];
+                if (params) replacement.push(params);
+                lanes.delete(i, 1);
+                attachArrayInto(lanes, i, replacement);
+              }
+            }
+          }, "local");
+        }
+        function laneAdd(levelName, laneYaml) {
+          const parsed = parseYamlOrLog(laneYaml, "lane");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const lanes = getOrCreateArr(getLevel(levelName), "lanes");
+            attachArrayInto(lanes, lanes.length, parsed);
+          }, "local");
+        }
+        function laneReplace(levelName, idx, laneYaml) {
+          const parsed = parseYamlOrLog(laneYaml, "lane");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const lanes = getLevel(levelName).get("lanes");
+            if (!lanes || idx < 0 || idx >= lanes.length) return;
+            lanes.delete(idx, 1);
+            attachArrayInto(lanes, idx, parsed);
+          }, "local");
+        }
+        function laneDelete(levelName, idx) {
+          doc.transact(() => {
+            const lanes = getLevel(levelName).get("lanes");
+            if (!lanes || idx < 0 || idx >= lanes.length) return;
+            lanes.delete(idx, 1);
+          }, "local");
+        }
+        function layerSet(levelName, layerName, layerYaml) {
+          const parsed = parseYamlOrLog(layerYaml, "layer");
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return;
+          doc.transact(() => {
+            const layers = getOrCreateMap(getLevel(levelName), "layers");
+            attachMapInto(layers, layerName, parsed);
+          }, "local");
+        }
+        function layerDelete(levelName, layerName) {
+          doc.transact(() => {
+            const layers = getLevel(levelName).get("layers");
+            if (!layers || !layers.has(layerName)) return;
+            layers.delete(layerName);
+          }, "local");
+        }
+        // Y.Map iteration order is insertion order with no positional ops, so
+        // reorder is: snapshot, wipe, re-insert in the requested order.
+        function layerReorder(levelName, names) {
+          if (!Array.isArray(names)) return;
+          doc.transact(() => {
+            const layers = getLevel(levelName).get("layers");
+            if (!layers) return;
+            const snapshot = new Map();
+            for (const k of layers.keys()) {
+              const v = layers.get(k);
+              snapshot.set(k, v && v.toJSON ? v.toJSON() : v);
+            }
+            for (const k of Array.from(layers.keys())) layers.delete(k);
+            const inserted = new Set();
+            for (const name of names) {
+              if (snapshot.has(name)) {
+                attachMapInto(layers, name, snapshot.get(name));
+                inserted.add(name);
+              }
+            }
+            for (const [k, v] of snapshot) {
+              if (!inserted.has(k)) attachMapInto(layers, k, v);
+            }
+          }, "local");
+        }
+
+        const undoManager = new Y.UndoManager(buildingMap, {
+          trackedOrigins: new Set(["local"]),
+        });
+
+        return {
+          getStatus,
+          isSynced,
+          isRemoteDirty,
+          clearRemoteDirty,
+          snapshotYaml,
+          applyLocalYaml,
+          vertexAdd,
+          vertexReplace,
+          vertexDelete,
+          laneAdd,
+          laneReplace,
+          laneDelete,
+          layerSet,
+          layerDelete,
+          layerReorder,
+          undo: () => undoManager.undo(),
+          redo: () => undoManager.redo(),
+          canUndo: () => undoManager.canUndo(),
+          canRedo: () => undoManager.canRedo(),
+        };
+      }
+
+      window.imrmf = imrmf;
+    </script>
+
+    {{{ SCRIPT }}}
+  </body>
+</html>

@@ -1,0 +1,20 @@
+# Generic folders
+**/.cache/
+**/.logs/
+**/.data/
+**/.thumbs/
+tmp/
+.venv/
+
+# docker build staging
+/dist/
+
+# Bazel
+**/bazel-*
+**/.bazel-*
+**/.external/
+**/.bazel_output/
+**/.bazel_export/
+
+# User-local bazelrc overrides
+user.bazelrc

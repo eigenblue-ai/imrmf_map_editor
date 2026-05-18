@@ -1,0 +1,80 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "imgui",
+    srcs = [
+        "imgui.cpp",
+        "imgui_demo.cpp",
+        "imgui_draw.cpp",
+        "imgui_internal.h",
+        "imgui_tables.cpp",
+        "imgui_widgets.cpp",
+        "imstb_rectpack.h",
+        "imstb_textedit.h",
+        "imstb_truetype.h",
+    ],
+    hdrs = [
+        "imconfig.h",
+        "imgui.h",
+    ],
+    copts = select({
+        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "//conditions:default": [],
+    }),
+    include_prefix = "imgui",
+    includes = ["."],
+    linkopts = [],
+)
+
+cc_library(
+    name = "imgui_stdlib",
+    srcs = ["misc/cpp/imgui_stdlib.cpp"],
+    hdrs = ["misc/cpp/imgui_stdlib.h"],
+    copts = select({
+        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "//conditions:default": [],
+    }),
+    include_prefix = "imgui",
+    includes = ["misc/cpp"],
+    deps = [":imgui"],
+)
+
+cc_library(
+    name = "platform-glfw",
+    srcs = ["backends/imgui_impl_glfw.cpp"],
+    hdrs = ["backends/imgui_impl_glfw.h"],
+    copts = select({
+        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "//conditions:default": [],
+    }),
+    include_prefix = "imgui",
+    includes = ["backends"],
+    deps = [
+        ":imgui",
+    ] + select({
+        "@imrmf_map_editor//config:wasm": [],
+        "//conditions:default": ["@glfw"],
+    }),
+)
+
+cc_library(
+    name = "renderer-opengl3",
+    srcs = ["backends/imgui_impl_opengl3.cpp"],
+    hdrs = [
+        "backends/imgui_impl_opengl3.h",
+        "backends/imgui_impl_opengl3_loader.h",
+    ],
+    copts = select({
+        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "//conditions:default": [],
+    }),
+    include_prefix = "imgui",
+    includes = ["backends"],
+    linkopts = select({
+        "@imrmf_map_editor//config:wasm": [],
+        "//conditions:default": ["-lGL"],
+    }),
+    deps = [":imgui"],
+)

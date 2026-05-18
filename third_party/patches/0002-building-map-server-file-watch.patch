@@ -1,0 +1,143 @@
+--- a/building_map_server/building_map_server.py
++++ b/building_map_server/building_map_server.py
+@@ -1,9 +1,13 @@
++# Modified by The ImRmfMapEditor Authors from upstream
++# open-rmf/rmf_traffic_editor. See
++# third_party/patches/0002-building-map-server-file-watch.patch for the change set.
+ import errno
+ import gzip
+ import json
+ import math
+ import os
+ import sys
++import time
+ import yaml
+ 
+ from numpy import inf
+@@ -35,27 +39,22 @@
+ 
+ 
+ class BuildingMapServer(Node):
+-    def __init__(self, map_path):
++    def __init__(self, map_path, watch=False, wait_for_file=False):
+         super().__init__('building_map_server')
+ 
+-        self.get_logger().info('loading map path: {}'.format(map_path))
++        self.map_path = map_path
++        self.map_dir = os.path.dirname(map_path)
++        self.map_msg = BuildingMap()
++        self.site_map_msg = SiteMap()
++        self._last_mtime = None
+ 
+-        if not os.path.isfile(map_path):
+-            raise FileNotFoundError(
+-                errno.ENOENT, os.strerror(errno.ENOENT), map_path)
+-        self.map_dir = os.path.dirname(map_path)  # for calculating image paths
+-
+-        if map_path.endswith('.building.yaml'):
+-            self.load_building_yaml(map_path)
+-        elif map_path.endswith('.gpkg'):
+-            self.load_geopackage(map_path)
+-        elif map_path.endswith('.geojson'):
+-            self.load_geojson(map_path)
+-        elif map_path.endswith('.geojson.gz'):
+-            self.load_geojson(map_path, True)
+-        else:
+-            self.get_logger().fatal('unknown filename suffix')
+-            sys.exit(1)
++        if wait_for_file:
++            self.get_logger().info(
++                f'waiting for {map_path} to appear before initial load...')
++            while not os.path.isfile(map_path):
++                time.sleep(0.5)
++
++        self._reload_from_disk(initial=True)
+ 
+         self.get_building_map_srv = self.create_service(
+             GetBuildingMap, 'get_building_map', self.get_building_map)
+@@ -68,7 +64,6 @@
+ 
+         self.building_map_pub = self.create_publisher(
+             BuildingMap, 'map', qos_profile=qos)
+-
+         self.site_map_pub = self.create_publisher(
+             SiteMap, 'site_map', qos_profile=qos)
+ 
+@@ -77,8 +72,51 @@
+         self.site_map_pub.publish(self.site_map_msg)
+ 
+         self.get_logger().info(
+-            'ready to serve map: "{}"  Ctrl+C to exit...'.format(
+-                self.map_msg.name))
++            f'ready to serve map: "{self.map_msg.name}"')
++
++        if watch:
++            # 1 Hz mtime poll. Cheap and avoids an inotify dependency, which
++            # not all base images ship.
++            self._watch_timer = self.create_timer(1.0, self._watch_tick)
++
++    def _reload_from_disk(self, initial=False):
++        if not os.path.isfile(self.map_path):
++            if initial:
++                raise FileNotFoundError(
++                    errno.ENOENT, os.strerror(errno.ENOENT), self.map_path)
++            return
++        try:
++            self._last_mtime = os.path.getmtime(self.map_path)
++        except OSError:
++            return
++        self.map_dir = os.path.dirname(self.map_path)
++        if self.map_path.endswith('.building.yaml'):
++            self.load_building_yaml(self.map_path)
++        elif self.map_path.endswith('.gpkg'):
++            self.load_geopackage(self.map_path)
++        elif self.map_path.endswith('.geojson'):
++            self.load_geojson(self.map_path)
++        elif self.map_path.endswith('.geojson.gz'):
++            self.load_geojson(self.map_path, True)
++        else:
++            self.get_logger().fatal('unknown filename suffix')
++            sys.exit(1)
++        if initial:
++            return
++        self.get_logger().info(
++            f'reloaded map "{self.map_msg.name}" after on-disk change')
++        self.building_map_pub.publish(self.map_msg)
++        self.site_map_pub.publish(self.site_map_msg)
++
++    def _watch_tick(self):
++        if not os.path.isfile(self.map_path):
++            return
++        try:
++            mtime = os.path.getmtime(self.map_path)
++        except OSError:
++            return
++        if self._last_mtime is None or mtime > self._last_mtime + 0.001:
++            self._reload_from_disk(initial=False)
+ 
+     def load_building_yaml(self, map_path):
+         with open(map_path, 'r') as f:
+@@ -335,17 +373,19 @@
+ 
+ 
+ def main():
+-    if len(sys.argv) > 1:
+-        map_path = sys.argv[1]
++    args = [a for a in sys.argv[1:] if a not in ('--watch', '--wait-for-file')]
++    watch = '--watch' in sys.argv[1:]
++    wait_for_file = '--wait-for-file' in sys.argv[1:]
++    if args:
++        map_path = args[0]
+     elif 'RMF_MAP_PATH' in os.environ:
+         map_path = os.environ['RMF_MAP_PATH']
+     else:
+         print('map path must be provided in command line or RMF_MAP_PATH env')
+         sys.exit(1)
+-        raise ValueError('Map path not provided')
+ 
+     rclpy.init()
+-    n = BuildingMapServer(map_path)
++    n = BuildingMapServer(map_path, watch=watch, wait_for_file=wait_for_file)
+     try:
+         rclpy.spin(n)
+     except KeyboardInterrupt:
