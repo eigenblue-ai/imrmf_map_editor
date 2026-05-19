@@ -332,6 +332,8 @@ void mirror_from_yjs() {
           g_state.selected_lanes.end());
       if (g_state.selected_layer >= (int)cur.layers.size())
         g_state.selected_layer = -1;
+      if (g_state.align_layer_idx >= (int)cur.layers.size())
+        g_state.align_layer_idx = -1;
       if (g_state.pending_lane_start >= (int)cur.vertices.size())
         g_state.pending_lane_start = -1;
       g_state.dirty = false;

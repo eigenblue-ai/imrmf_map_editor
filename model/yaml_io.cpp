@@ -140,6 +140,25 @@ Lane lane_from_yaml(const YAML::Node &node) {
   return l;
 }
 
+Fiducial fiducial_from_yaml(const YAML::Node &node) {
+  Fiducial f;
+  if (!node.IsSequence() || node.size() < 3)
+    return f;
+  f.x = node[0].as<double>(0.0);
+  f.y = node[1].as<double>(0.0);
+  f.name = node[2].as<std::string>("");
+  return f;
+}
+
+YAML::Node fiducial_to_yaml(const Fiducial &f) {
+  YAML::Node n(YAML::NodeType::Sequence);
+  n.SetStyle(YAML::EmitterStyle::Flow);
+  n.push_back(f.x);
+  n.push_back(f.y);
+  n.push_back(f.name);
+  return n;
+}
+
 YAML::Node lane_to_yaml(const Lane &l) {
   YAML::Node n(YAML::NodeType::Sequence);
   n.SetStyle(YAML::EmitterStyle::Flow);
@@ -219,8 +238,8 @@ YAML::Node layer_to_yaml(const Layer &l) {
 }
 
 // Known top-level level keys we model directly. Everything else is passthrough.
-const char *kKnownLevelKeys[] = {"vertices", "lanes", "elevation", "drawing",
-                                 "layers"};
+const char *kKnownLevelKeys[] = {"vertices", "lanes", "fiducials",
+                                 "elevation", "drawing", "layers"};
 
 bool is_known_level_key(const std::string &k) {
   for (const char *known : kKnownLevelKeys)
@@ -244,6 +263,10 @@ Level level_from_yaml(const std::string &name, const YAML::Node &node) {
   if (node["lanes"]) {
     for (const auto &l : node["lanes"])
       lvl.lanes.push_back(lane_from_yaml(l));
+  }
+  if (node["fiducials"] && node["fiducials"].IsSequence()) {
+    for (const auto &f : node["fiducials"])
+      lvl.fiducials.push_back(fiducial_from_yaml(f));
   }
   if (node["layers"] && node["layers"].IsMap()) {
     for (auto it = node["layers"].begin(); it != node["layers"].end(); ++it) {
@@ -283,6 +306,12 @@ YAML::Node level_to_yaml(const Level &lvl) {
   for (const auto &l : lvl.lanes)
     lanes.push_back(lane_to_yaml(l));
   n["lanes"] = lanes;
+  if (!lvl.fiducials.empty()) {
+    YAML::Node fids(YAML::NodeType::Sequence);
+    for (const auto &f : lvl.fiducials)
+      fids.push_back(fiducial_to_yaml(f));
+    n["fiducials"] = fids;
+  }
   if (!lvl.layers.empty()) {
     YAML::Node layers(YAML::NodeType::Map);
     for (const auto &L : lvl.layers)
@@ -350,6 +379,12 @@ std::string serialize_lane(const Lane &l) {
 std::string serialize_layer(const Layer &l) {
   YAML::Emitter emitter;
   emitter << layer_to_yaml(l);
+  return std::string(emitter.c_str() ? emitter.c_str() : "");
+}
+
+std::string serialize_fiducial(const Fiducial &f) {
+  YAML::Emitter emitter;
+  emitter << fiducial_to_yaml(f);
   return std::string(emitter.c_str() ? emitter.c_str() : "");
 }
 

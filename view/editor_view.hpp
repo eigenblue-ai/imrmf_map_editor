@@ -53,6 +53,24 @@ struct EditorState {
 
   int selected_layer = -1;
 
+  // -1 = no layer currently in direct-map align mode.
+  int align_layer_idx = -1;
+
+  // Align floors tool. Inter-level transform is derived from matched-name
+  // fiducial pairs; nothing here is stored — the fiducials themselves are.
+  bool align_floors_mode = false;
+  int align_floors_target = -1;
+  int align_floors_next_id = 1;
+  std::string align_floors_next_name;
+  int align_floors_sel_level = -1;
+  int align_floors_sel_idx = -1;
+  bool align_floors_placing = false;
+  std::string align_floors_image;
+  // Frozen on align-mode entry so the fiducial-distance mpp fallback
+  // doesn't cancel xf.scale changes during scroll.
+  double align_floors_ref_mpp = 0.0;
+  double align_floors_tgt_mpp = 0.0;
+
   std::unordered_map<std::string, FloorplanSession> floorplan_session;
   std::unordered_map<std::string, LayerSession> layer_session;
 
@@ -101,8 +119,17 @@ private:
                     const TopBarHooks &top_bar);
   void draw_canvas(Building &building, EditorState &state);
   void draw_add_layer_section(Building &building, EditorState &state);
+  void draw_layer_config_panel(Building &building, EditorState &state);
   void draw_attribute_panel(Building &building, EditorState &state);
   void draw_status_bar(const EditorState &state);
+
+  // Direct-map align mode for a single layer. Ctrl = fine/zoom-independent.
+  void handle_align_input(Building &building, EditorState &state, bool hovered);
+
+  void draw_align_floors_panel(Building &building, EditorState &state);
+  void draw_align_floors_canvas(Building &building, EditorState &state);
+  void handle_floor_align_input(Building &building, EditorState &state,
+                                bool hovered);
 };
 
 } // namespace imrmf::map_editor

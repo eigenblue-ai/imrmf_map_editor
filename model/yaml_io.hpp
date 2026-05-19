@@ -21,5 +21,6 @@ std::string serialize_building(const Building &b);
 std::string serialize_vertex(const Vertex &v);
 std::string serialize_lane(const Lane &l);
 std::string serialize_layer(const Layer &l);
+std::string serialize_fiducial(const Fiducial &f);
 
 } // namespace imrmf::map_editor

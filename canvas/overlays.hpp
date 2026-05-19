@@ -37,4 +37,9 @@ void draw_layers_overlay(
     LayersOverlayState &state, const MapCanvas &canvas,
     const LayerEditCallbacks &cb = {});
 
+// xf is optional: when non-null, the canvas-world pixel is first mapped back
+// to the reference level via tgt_to_ref before the rmf-meter computation.
+void draw_mouse_coord_hud(const MapCanvas &canvas, double ref_mpp,
+                          const FloorTransform *xf = nullptr);
+
 } // namespace imrmf::map_editor::canvas

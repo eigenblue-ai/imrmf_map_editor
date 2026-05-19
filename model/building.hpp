@@ -67,6 +67,13 @@ struct Lane {
   std::map<std::string, ParamValue> params;
 };
 
+// YAML: [x_px, y_px, name].
+struct Fiducial {
+  double x = 0.0;
+  double y = 0.0;
+  std::string name;
+};
+
 // rmf_traffic_editor layer. Transform fields are meters / radians.
 struct Layer {
   std::string name;
@@ -86,6 +93,7 @@ struct Level {
   std::string drawing_filename;
   std::vector<Vertex> vertices;
   std::vector<Lane> lanes;
+  std::vector<Fiducial> fiducials;
   std::vector<Layer> layers;
   YAML::Node passthrough; // walls, fiducials, measurements, doors, ...
 };
@@ -99,6 +107,26 @@ struct Building {
 
 // Meters / pixel
 double compute_level_mpp(const Building &building, int level_idx);
+
+// Affine in pixel-y-down space. Forward (tgt_to_ref) maps target-level pixels
+// to reference-level pixels; inverse (ref_to_tgt) goes the other way. Fit via
+// Kabsch + uniform scale on name-matched fiducial pairs.
+struct FloorTransform {
+  double scale = 1.0;
+  double yaw = 0.0;
+  double tx = 0.0;
+  double ty = 0.0;
+  int matched = 0;
+};
+
+FloorTransform compute_floor_transform(const std::vector<Fiducial> &ref,
+                                       const std::vector<Fiducial> &target,
+                                       double default_scale);
+
+std::pair<double, double> tgt_to_ref(const FloorTransform &xf,
+                                     double tgt_x, double tgt_y);
+std::pair<double, double> ref_to_tgt(const FloorTransform &xf,
+                                     double ref_x, double ref_y);
 
 std::vector<int> lanes_referencing_vertex(const Level &level, int vertex_idx);
 

@@ -152,6 +152,9 @@ void mevjs_layer_set(const char *level, const char *layer_name,
                      const char *yaml);
 void mevjs_layer_delete(const char *level, const char *layer_name);
 void mevjs_layer_reorder(const char *level, const char *names_json);
+void mevjs_fiducial_add(const char *level, const char *yaml);
+void mevjs_fiducial_replace(const char *level, int idx, const char *yaml);
+void mevjs_fiducial_delete(const char *level, int idx);
 }
 #endif
 
@@ -226,6 +229,35 @@ void yjs_op_layer_delete(const std::string &level, const std::string &name) {
   (void)name;
 #endif
 }
+void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
+#ifdef __EMSCRIPTEN__
+  std::string y = serialize_fiducial(f);
+  mevjs_fiducial_add(level.c_str(), y.c_str());
+#else
+  (void)level;
+  (void)f;
+#endif
+}
+void yjs_op_fiducial_replace(const std::string &level, int idx,
+                             const Fiducial &f) {
+#ifdef __EMSCRIPTEN__
+  std::string y = serialize_fiducial(f);
+  mevjs_fiducial_replace(level.c_str(), idx, y.c_str());
+#else
+  (void)level;
+  (void)idx;
+  (void)f;
+#endif
+}
+void yjs_op_fiducial_delete(const std::string &level, int idx) {
+#ifdef __EMSCRIPTEN__
+  mevjs_fiducial_delete(level.c_str(), idx);
+#else
+  (void)level;
+  (void)idx;
+#endif
+}
+
 void yjs_op_layer_reorder(const std::string &level,
                           const std::vector<std::string> &names) {
 #ifdef __EMSCRIPTEN__
@@ -491,6 +523,20 @@ EM_JS(void, mevjs_layer_reorder, (const char *level, const char *names_json), {
     console.error('[yjs] layer reorder parse failed:', e);
   }
 });
+EM_JS(void, mevjs_fiducial_add, (const char *level, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.fiducialAdd(UTF8ToString(level), UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_fiducial_replace,
+      (const char *level, int idx, const char *yaml), {
+        if (window.imrmf.yjs)
+          window.imrmf.yjs.fiducialReplace(UTF8ToString(level), idx,
+                                           UTF8ToString(yaml));
+      });
+EM_JS(void, mevjs_fiducial_delete, (const char *level, int idx), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.fiducialDelete(UTF8ToString(level), idx);
+});
 
 #endif // __EMSCRIPTEN__
 
@@ -541,9 +587,15 @@ void EditorView::draw(Building &building, EditorState &state,
   ImGui::SameLine();
   ImGui::BeginChild("right_col", ImVec2(right_col_w, region.y - status_h),
                     false);
-  draw_add_layer_section(building, state);
-  ImGui::Separator();
-  draw_attribute_panel(building, state);
+  if (state.align_floors_mode) {
+    draw_align_floors_panel(building, state);
+  } else {
+    draw_add_layer_section(building, state);
+    ImGui::Separator();
+    draw_layer_config_panel(building, state);
+    ImGui::Separator();
+    draw_attribute_panel(building, state);
+  }
   ImGui::EndChild();
 
   draw_status_bar(state);
@@ -723,6 +775,51 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   mode_button("Vertex [V]", Mode::Vertex);
   mode_button("Lane [L]", Mode::Lane);
 
+  {
+    const bool active = state.align_floors_mode;
+    if (active)
+      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(80, 130, 200, 255));
+    if (ImGui::Button(active ? "Align floors [on]" : "Align floors")) {
+      state.align_floors_mode = !state.align_floors_mode;
+      if (state.align_floors_mode) {
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+        state.selected_layer = -1;
+        state.align_layer_idx = -1;
+        state.pending_lane_start = -1;
+        state.align_floors_sel_level = -1;
+        state.align_floors_sel_idx = -1;
+        if (state.align_floors_target < 0 ||
+            state.align_floors_target == 0 ||
+            state.align_floors_target >= (int)building.levels.size()) {
+          state.align_floors_target = building.levels.size() >= 2 ? 1 : -1;
+        }
+        int max_id = 0;
+        for (const Level &lvl : building.levels) {
+          for (const Fiducial &f : lvl.fiducials) {
+            if (f.name.size() > 1 && f.name[0] == 'F') {
+              try { max_id = std::max(max_id, std::stoi(f.name.substr(1))); }
+              catch (...) {}
+            }
+          }
+        }
+        state.align_floors_next_id = max_id + 1;
+        state.align_floors_next_name =
+            "F" + std::to_string(state.align_floors_next_id);
+        state.align_floors_placing = false;
+        state.align_floors_image.clear();
+        state.align_floors_ref_mpp = compute_level_mpp(building, 0);
+        state.align_floors_tgt_mpp =
+            (state.align_floors_target > 0)
+                ? compute_level_mpp(building, state.align_floors_target)
+                : 0.0;
+      }
+    }
+    if (active)
+      ImGui::PopStyleColor();
+    ImGui::SameLine();
+  }
+
   if (state.dirty) {
     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "(modified)");
   } else {
@@ -845,6 +942,10 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 }
 
 void EditorView::draw_canvas(Building &building, EditorState &state) {
+  if (state.align_floors_mode) {
+    draw_align_floors_canvas(building, state);
+    return;
+  }
   Level &level = building.levels[state.level_idx];
 
   canvas::DrawOptions opts;
@@ -888,6 +989,8 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     }
   };
   canvas_.draw(building, state.level_idx, opts);
+  canvas::draw_mouse_coord_hud(canvas_,
+                               compute_level_mpp(building, state.level_idx));
 
   int new_idx = state.level_idx;
   if (canvas::draw_level_selector_overlay(building, new_idx, canvas_) &&
@@ -898,6 +1001,7 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     state.selected_lanes.clear();
     state.pending_lane_start = -1;
     state.selected_layer = -1;
+    state.align_layer_idx = -1;
     reset_view();
   }
 
@@ -913,6 +1017,12 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
         cur.layers.erase(cur.layers.begin() + i);
         if (state.selected_layer == (int)i)
           state.selected_layer = -1;
+        else if (state.selected_layer > (int)i)
+          state.selected_layer -= 1;
+        if (state.align_layer_idx == (int)i)
+          state.align_layer_idx = -1;
+        else if (state.align_layer_idx > (int)i)
+          state.align_layer_idx -= 1;
         break;
       }
     }
@@ -931,6 +1041,13 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   ImGuiIO &io = ImGui::GetIO();
   bool hovered = ImGui::IsItemHovered();
   ImVec2 mouse = io.MousePos;
+
+  // Direct-map layer align bypasses the regular tool pipeline.
+  if (state.align_layer_idx >= 0 &&
+      state.align_layer_idx < (int)level.layers.size()) {
+    handle_align_input(building, state, hovered);
+    return;
+  }
   canvas_.handle_pan_zoom(hovered);
 
   auto world_to_screen = [&](double wx, double wy) {
@@ -1068,6 +1185,9 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
             state.selected_vertices.push_back(vidx);
           }
         }
+        for (int i : state.selected_vertices) {
+          s_drag_origins.push_back({level.vertices[i].x, level.vertices[i].y});
+        }
       } else if (lidx >= 0) {
         if (shift) {
           toggle_lane(lidx);
@@ -1128,7 +1248,8 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   }
 
   if (s_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    if (state.mode == Mode::Vertex && !s_drag_origins.empty()) {
+    if ((state.mode == Mode::Vertex || state.mode == Mode::Pan) &&
+        !s_drag_origins.empty()) {
       auto [wx, wy] = screen_to_world(mouse);
       double dx = wx - s_drag_start_world_x;
       double dy = wy - s_drag_start_world_y;
@@ -1367,6 +1488,247 @@ void EditorView::draw_add_layer_section(Building &building,
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+  }
+}
+
+void EditorView::draw_layer_config_panel(Building &building,
+                                         EditorState &state) {
+  Level &level = building.levels[state.level_idx];
+
+  // Drop stale align target if a peer deleted the layer.
+  if (state.align_layer_idx >= (int)level.layers.size())
+    state.align_layer_idx = -1;
+
+  ImGui::TextDisabled("Layer configuration");
+
+  {
+    ImGui::PushID("__cfg_fp");
+    if (ImGui::CollapsingHeader("Floorplan (reference)",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+      FloorplanSession &fps = state.floorplan_session[level.name];
+      ImGui::Checkbox("visible##fp", &fps.visible);
+      ImGui::SameLine();
+      ImGui::Checkbox("invert##fp", &fps.invert);
+      ImGui::SetNextItemWidth(-1);
+      ImGui::SliderFloat("##fp_alpha", &fps.alpha, 0.0f, 1.0f, "alpha %.2f");
+    }
+    ImGui::PopID();
+  }
+
+  for (int i = 0; i < (int)level.layers.size(); ++i) {
+    Layer &L = level.layers[i];
+    const std::string layer_name = L.name;
+    LayerSession &sess = state.layer_session[level.name + ":" + L.name];
+
+    ImGui::PushID(i);
+
+    const bool is_aligning = (state.align_layer_idx == i);
+    if (is_aligning) {
+      ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(50, 110, 50, 230));
+      ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(60, 130, 60, 230));
+      ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(70, 150, 70, 255));
+    }
+    bool open = ImGui::CollapsingHeader(L.name.c_str(),
+                                        ImGuiTreeNodeFlags_DefaultOpen);
+    if (is_aligning)
+      ImGui::PopStyleColor(3);
+    if (!open) {
+      ImGui::PopID();
+      continue;
+    }
+
+    bool dirty = false, commit = false;
+
+    if (ImGui::Checkbox("visible", &L.visible))
+      commit = true;
+    ImGui::SameLine();
+    ImGui::Checkbox("invert", &sess.invert);
+
+    float col[3] = {(float)L.color_r, (float)L.color_g, (float)L.color_b};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::ColorEdit3("##cfg_color", col, ImGuiColorEditFlags_NoInputs)) {
+      L.color_r = col[0];
+      L.color_g = col[1];
+      L.color_b = col[2];
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+
+    float a = (float)L.color_a;
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::SliderFloat("##cfg_alpha", &a, 0.0f, 1.0f, "alpha %.2f")) {
+      L.color_a = a;
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+
+    float scale = (float)L.scale;
+    float yaw_deg = (float)(L.yaw * 180.0 / M_PI);
+    float tx = (float)L.translation_x;
+    float ty = (float)L.translation_y;
+    if (ImGui::DragFloat("scale (m/px)", &scale, 0.0005f, 0.0001f, 100.0f,
+                         "%.6f")) {
+      L.scale = scale;
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    if (ImGui::DragFloat("yaw (deg)", &yaw_deg, 0.5f, -360.0f, 360.0f,
+                         "%.2f")) {
+      L.yaw = yaw_deg * M_PI / 180.0;
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    if (ImGui::DragFloat("tx (m)", &tx, 0.05f)) {
+      L.translation_x = tx;
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    if (ImGui::DragFloat("ty (m)", &ty, 0.05f)) {
+      L.translation_y = ty;
+      dirty = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+
+    const char *btn = is_aligning ? "Stop aligning" : "Align on map";
+    if (is_aligning) {
+      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(60, 130, 60, 220));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 150, 70, 240));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(80, 170, 80, 255));
+    }
+    if (ImGui::Button(btn)) {
+      flush_pending_layer(level, state);
+      state.align_layer_idx = is_aligning ? -1 : i;
+    }
+    if (is_aligning)
+      ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Wheel = scale, left-drag = translate.\n"
+                        "Ctrl = fine (independent of canvas zoom).\n"
+                        "Middle-drag still pans the view.");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete##cfg")) {
+#ifdef __EMSCRIPTEN__
+      yjs_op_layer_delete(level.name, L.name);
+#endif
+      level.layers.erase(level.layers.begin() + i);
+      if (state.selected_layer == i)
+        state.selected_layer = -1;
+      else if (state.selected_layer > i)
+        state.selected_layer -= 1;
+      if (state.align_layer_idx == i)
+        state.align_layer_idx = -1;
+      else if (state.align_layer_idx > i)
+        state.align_layer_idx -= 1;
+      ImGui::PopID();
+      return; // iterator invalidated
+    }
+
+    if (dirty) {
+      state.pending_commit_layer = layer_name;
+      state.pending_commit_time = ImGui::GetTime();
+    }
+    if (commit) {
+#ifdef __EMSCRIPTEN__
+      yjs_op_layer_set(level.name, L);
+#endif
+      state.pending_commit_layer.clear();
+      state.pending_commit_time = 0.0;
+    }
+
+    ImGui::PopID();
+  }
+
+  if (state.align_layer_idx >= 0 &&
+      state.align_layer_idx < (int)level.layers.size()) {
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Aligning: %s",
+                       level.layers[state.align_layer_idx].name.c_str());
+    ImGui::TextDisabled("Wheel = scale  /  drag = translate");
+    ImGui::TextDisabled("Hold Ctrl for fine steps");
+  }
+}
+
+void EditorView::handle_align_input(Building &building, EditorState &state,
+                                    bool hovered) {
+  Level &level = building.levels[state.level_idx];
+  if (state.align_layer_idx < 0 ||
+      state.align_layer_idx >= (int)level.layers.size())
+    return;
+  Layer &L = level.layers[state.align_layer_idx];
+  ImGuiIO &io = ImGui::GetIO();
+
+  if (io.KeyAlt) {
+    canvas_.handle_pan_zoom(hovered);
+    return;
+  }
+
+  double mpp = compute_level_mpp(building, state.level_idx);
+  double eff_mpp = mpp > 0.0 ? mpp : 1.0;
+
+  // Middle-drag still pans the view.
+  static bool s_align_mpan = false;
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+    s_align_mpan = true;
+  if (s_align_mpan) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+      canvas_.view_state().offset_x += io.MouseDelta.x;
+      canvas_.view_state().offset_y += io.MouseDelta.y;
+    } else {
+      s_align_mpan = false;
+    }
+  }
+
+  bool dirty = false;
+
+  // Wheel = scale. Ctrl = fine, zoom-independent.
+  if (hovered && io.MouseWheel != 0.0f) {
+    if (io.KeyCtrl) {
+      double next = L.scale + (double)io.MouseWheel * 1e-4;
+      L.scale = std::max(1e-6, next);
+    } else {
+      double factor = 1.0 + (double)io.MouseWheel * 0.02;
+      L.scale = std::max(1e-6, L.scale * factor);
+    }
+    dirty = true;
+  }
+
+  // Left-drag = translation in meters. No Ctrl: layer follows cursor.
+  // Ctrl: fixed small step per screen px, zoom-independent.
+  static bool s_align_dragging = false;
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    s_align_dragging = true;
+  if (s_align_dragging) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      const float dx = io.MouseDelta.x, dy = io.MouseDelta.y;
+      if (dx != 0.0f || dy != 0.0f) {
+        const float vs = canvas_.view_state().scale;
+        double mx, my;
+        if (io.KeyCtrl) {
+          mx = (double)dx * eff_mpp * 0.01;
+          my = (double)dy * eff_mpp * 0.01;
+        } else {
+          mx = (double)dx * eff_mpp / std::max(1e-6f, vs);
+          my = (double)dy * eff_mpp / std::max(1e-6f, vs);
+        }
+        L.translation_x += mx;
+        L.translation_y += my;
+        dirty = true;
+      }
+    } else {
+      s_align_dragging = false;
+    }
+  }
+
+  if (dirty) {
+    state.pending_commit_layer = L.name;
+    flush_pending_layer(level, state);
   }
 }
 
@@ -1713,6 +2075,469 @@ void EditorView::draw_status_bar(const EditorState &state) {
   if (!state.status_message.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("| %s", state.status_message.c_str());
+  }
+}
+
+namespace {
+
+constexpr ImU32 kFidColorRef = IM_COL32(110, 220, 120, 255);
+constexpr ImU32 kFidColorTgt = IM_COL32(255, 180, 80, 255);
+constexpr ImU32 kFidColorSel = IM_COL32(255, 255, 255, 255);
+constexpr float kFidHitPx = 9.0f;
+
+
+void draw_fid_marker(ImDrawList *dl, ImVec2 p, const char *name, ImU32 col,
+                     bool selected) {
+  const float r = selected ? 8.0f : 6.0f;
+  ImVec2 a(p.x, p.y - r), b(p.x + r, p.y);
+  ImVec2 c(p.x, p.y + r), d(p.x - r, p.y);
+  dl->AddQuadFilled(a, b, c, d, col);
+  dl->AddQuad(a, b, c, d, selected ? kFidColorSel : IM_COL32(20, 20, 20, 220),
+              selected ? 2.5f : 1.5f);
+  if (name && *name)
+    dl->AddText(ImVec2(p.x + 8.0f, p.y - 8.0f), col, name);
+}
+
+double default_target_scale(const Building &building, int tgt_idx) {
+  double mpp_ref = compute_level_mpp(building, 0);
+  double mpp_tgt = compute_level_mpp(building, tgt_idx);
+  return (mpp_ref > 0.0 && mpp_tgt > 0.0) ? (mpp_tgt / mpp_ref) : 1.0;
+}
+
+
+void render_align_image(const canvas::MapCanvas &c,
+                        canvas::TextureProvider &provider,
+                        const std::string &asset_id, const Level &lvl,
+                        const std::string &image_name, double level_mpp,
+                        const FloorTransform *xf, ImU32 tint) {
+  ImDrawList *dl = c.draw_list();
+  canvas::LayerTexture *tex = nullptr;
+  double s_w = 0.0, cosL = 1.0, sinL = 0.0, lx = 0.0, ly = 0.0;
+  int ow = 0, oh = 0;
+  if (image_name.empty()) {
+    if (lvl.drawing_filename.empty()) return;
+    tex = &provider.acquire("fp:" + lvl.name, asset_id, lvl.drawing_filename,
+                            1.0, 1.0, 1.0);
+    s_w = 1.0;
+  } else {
+    const Layer *L = nullptr;
+    for (const Layer &q : lvl.layers)
+      if (q.name == image_name) { L = &q; break; }
+    if (!L) return;
+    tex = &provider.acquire("lay:" + lvl.name + ":" + L->name, asset_id,
+                            L->filename, L->color_r, L->color_g, L->color_b);
+    s_w = L->scale / level_mpp;
+    cosL = std::cos(L->yaw);
+    sinL = std::sin(L->yaw);
+    lx = L->translation_x / level_mpp;
+    ly = L->translation_y / level_mpp;
+  }
+  if (!tex || tex->status != canvas::LoadStatus::Ok) return;
+  ow = tex->orig_width > 0 ? tex->orig_width : tex->width;
+  oh = tex->orig_height > 0 ? tex->orig_height : tex->height;
+  auto corner = [&](double ix, double iy) {
+    double a = ix * s_w, b = iy * s_w;
+    double wx = lx + cosL * a - sinL * b;
+    double wy = ly + sinL * a + cosL * b;
+    if (xf) { auto p = tgt_to_ref(*xf, wx, wy); wx = p.first; wy = p.second; }
+    return c.world_to_screen(wx, wy);
+  };
+  dl->AddImageQuad((void *)(intptr_t)tex->id, corner(0.0, 0.0),
+                   corner((double)ow, 0.0), corner((double)ow, (double)oh),
+                   corner(0.0, (double)oh), ImVec2(0, 0), ImVec2(1, 0),
+                   ImVec2(1, 1), ImVec2(0, 1), tint);
+}
+
+void draw_align_image_combo(const Building &building, std::string &selection) {
+  ImGui::Text("Show on both floors:");
+  ImGui::SetNextItemWidth(-1);
+  const char *preview = selection.empty() ? "floorplan" : selection.c_str();
+  if (ImGui::BeginCombo("##align_image", preview)) {
+    if (ImGui::Selectable("floorplan", selection.empty()))
+      selection.clear();
+    std::vector<std::string> seen;
+    for (const Level &lvl : building.levels) {
+      for (const Layer &L : lvl.layers) {
+        if (std::find(seen.begin(), seen.end(), L.name) != seen.end())
+          continue;
+        seen.push_back(L.name);
+        if (ImGui::Selectable(L.name.c_str(), selection == L.name))
+          selection = L.name;
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
+
+} // namespace
+
+void EditorView::draw_align_floors_panel(Building &building,
+                                         EditorState &state) {
+  if (building.levels.empty()) {
+    ImGui::TextDisabled("No levels loaded.");
+    return;
+  }
+  ImGui::TextDisabled("Align floors");
+  ImGui::Separator();
+
+  Level &ref = building.levels[0];
+  ImGui::Text("Reference: %s", ref.name.c_str());
+
+  if (building.levels.size() < 2) {
+    ImGui::TextDisabled("Need at least 2 levels.");
+    return;
+  }
+
+  int tgt = state.align_floors_target;
+  if (tgt <= 0 || tgt >= (int)building.levels.size()) tgt = 1;
+  ImGui::SetNextItemWidth(-1);
+  if (ImGui::BeginCombo("##align_target", building.levels[tgt].name.c_str())) {
+    for (int i = 1; i < (int)building.levels.size(); ++i) {
+      bool sel = (i == tgt);
+      if (ImGui::Selectable(building.levels[i].name.c_str(), sel)) {
+        if (i != tgt) {
+          tgt = i;
+          state.align_floors_sel_level = -1;
+          state.align_floors_sel_idx = -1;
+          state.align_floors_ref_mpp = compute_level_mpp(building, 0);
+          state.align_floors_tgt_mpp = compute_level_mpp(building, tgt);
+        }
+      }
+      if (sel) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  state.align_floors_target = tgt;
+  Level &target = building.levels[tgt];
+
+  ImGui::Spacing();
+  ImGui::Text("New fiducial name:");
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputText("##align_next_name", &state.align_floors_next_name);
+  if (!state.align_floors_placing) {
+    if (ImGui::Button("Add fiducial"))
+      state.align_floors_placing = true;
+  } else {
+    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                       "Click on map (Esc cancels)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("cancel"))
+      state.align_floors_placing = false;
+  }
+
+  draw_align_image_combo(building, state.align_floors_image);
+
+  FloorTransform xf = compute_floor_transform(
+      ref.fiducials, target.fiducials, default_target_scale(building, tgt));
+
+  ImGui::Separator();
+  ImGui::Text("Matched pairs: %d", xf.matched);
+  if (xf.matched == 0)
+    ImGui::TextDisabled("Place matching-named fiducials to align.");
+  else if (xf.matched == 1)
+    ImGui::TextDisabled("translation only — scroll-zoom is a no-op until 2+ pairs");
+  ImGui::TextDisabled("scale %.5f  yaw %.2f°  t (%.1f, %.1f)", xf.scale,
+                      xf.yaw * 180.0 / M_PI, xf.tx, xf.ty);
+
+  int del_level = -1, del_idx = -1;
+  auto fid_list = [&](Level &lvl, int level_idx, ImVec4 col,
+                      const char *label) {
+    ImGui::Separator();
+    ImGui::TextColored(col, "%s fiducials (%d)", label,
+                       (int)lvl.fiducials.size());
+    for (int i = 0; i < (int)lvl.fiducials.size(); ++i) {
+      const Fiducial &f = lvl.fiducials[i];
+      ImGui::PushID(level_idx * 10000 + i);
+      if (ImGui::SmallButton("X")) {
+        del_level = level_idx;
+        del_idx = i;
+      }
+      ImGui::SameLine();
+      bool sel = (state.align_floors_sel_level == level_idx &&
+                  state.align_floors_sel_idx == i);
+      ImGui::TextColored(sel ? ImVec4(1, 1, 1, 1) : col,
+                         "%s  (%.0f, %.0f)", f.name.c_str(), f.x, f.y);
+      ImGui::PopID();
+    }
+  };
+  fid_list(ref, 0, ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "Reference");
+  fid_list(target, tgt, ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Target");
+  if (del_level >= 0) {
+    Level &L = building.levels[del_level];
+    if (del_idx >= 0 && del_idx < (int)L.fiducials.size()) {
+      yjs_op_fiducial_delete(L.name, del_idx);
+      L.fiducials.erase(L.fiducials.begin() + del_idx);
+      if (state.align_floors_sel_level == del_level) {
+        if (state.align_floors_sel_idx == del_idx) {
+          state.align_floors_sel_level = -1;
+          state.align_floors_sel_idx = -1;
+        } else if (state.align_floors_sel_idx > del_idx) {
+          state.align_floors_sel_idx -= 1;
+        }
+      }
+    }
+  }
+
+  ImGui::Separator();
+  if (ImGui::Button("Stop alignment")) {
+    state.align_floors_mode = false;
+    state.align_floors_sel_level = -1;
+    state.align_floors_sel_idx = -1;
+  }
+}
+
+void EditorView::draw_align_floors_canvas(Building &building,
+                                          EditorState &state) {
+  if (building.levels.empty()) {
+    ImGui::TextDisabled("No levels loaded.");
+    return;
+  }
+  const int tgt_idx = state.align_floors_target;
+  const bool has_target =
+      (tgt_idx > 0 && tgt_idx < (int)building.levels.size());
+
+  FloorTransform xf;
+  if (state.align_floors_ref_mpp <= 0.0)
+    state.align_floors_ref_mpp = compute_level_mpp(building, 0);
+  double ref_mpp = state.align_floors_ref_mpp;
+  if (ref_mpp <= 0.0) ref_mpp = 1.0;
+  double tgt_mpp = ref_mpp;
+  if (has_target) {
+    xf = compute_floor_transform(
+        building.levels[0].fiducials, building.levels[tgt_idx].fiducials,
+        default_target_scale(building, tgt_idx));
+    if (state.align_floors_tgt_mpp <= 0.0)
+      state.align_floors_tgt_mpp = compute_level_mpp(building, tgt_idx);
+    if (state.align_floors_tgt_mpp > 0.0) tgt_mpp = state.align_floors_tgt_mpp;
+  }
+
+  canvas::DrawOptions opts;
+  opts.show_vertex_names = false;
+  opts.draw_floorplan = false;
+  opts.draw_layers = false;
+  opts.draw_vertices = false;
+  opts.draw_lanes = false;
+  opts.after_draw = [&, xf, tgt_mpp, ref_mpp, has_target](
+                       const canvas::MapCanvas &c) {
+    render_align_image(c, *texture_provider_, building_id_, building.levels[0],
+                       state.align_floors_image, ref_mpp, nullptr,
+                       IM_COL32(255, 255, 255, 255));
+    if (has_target) {
+      render_align_image(c, *texture_provider_, building_id_,
+                         building.levels[tgt_idx], state.align_floors_image,
+                         tgt_mpp, &xf, IM_COL32(255, 220, 160, 200));
+    }
+    ImDrawList *dl = c.draw_list();
+    const Level &ref = building.levels[0];
+    for (int i = 0; i < (int)ref.fiducials.size(); ++i) {
+      const Fiducial &f = ref.fiducials[i];
+      bool sel = (state.align_floors_sel_level == 0 &&
+                  state.align_floors_sel_idx == i);
+      draw_fid_marker(dl, c.world_to_screen(f.x, f.y), f.name.c_str(),
+                      kFidColorRef, sel);
+    }
+    if (has_target) {
+      const Level &target = building.levels[tgt_idx];
+      for (int i = 0; i < (int)target.fiducials.size(); ++i) {
+        const Fiducial &f = target.fiducials[i];
+        auto [wx, wy] = tgt_to_ref(xf, f.x, f.y);
+        bool sel = (state.align_floors_sel_level == tgt_idx &&
+                    state.align_floors_sel_idx == i);
+        draw_fid_marker(dl, c.world_to_screen(wx, wy), f.name.c_str(),
+                        kFidColorTgt, sel);
+      }
+    }
+  };
+  canvas_.draw(building, 0, opts);
+  canvas::draw_mouse_coord_hud(canvas_, ref_mpp);
+
+  int ignore_level = 0;
+  canvas::draw_level_selector_overlay(building, ignore_level, canvas_);
+
+  ImGui::SetCursorScreenPos(canvas_.canvas_pos());
+  ImGui::InvisibleButton("##align_floors_canvas", canvas_.canvas_size());
+  bool hovered = ImGui::IsItemHovered();
+  handle_floor_align_input(building, state, hovered);
+}
+
+void EditorView::handle_floor_align_input(Building &building,
+                                          EditorState &state, bool hovered) {
+  if (!state.align_floors_mode) return;
+  const int tgt = state.align_floors_target;
+  if (tgt <= 0 || tgt >= (int)building.levels.size()) return;
+  Level &ref = building.levels[0];
+  Level &target = building.levels[tgt];
+  ImGuiIO &io = ImGui::GetIO();
+  ImVec2 mouse = io.MousePos;
+
+  if (io.KeyAlt) {
+    canvas_.handle_pan_zoom(hovered);
+    return;
+  }
+
+  FloorTransform xf = compute_floor_transform(
+      ref.fiducials, target.fiducials, default_target_scale(building, tgt));
+
+  auto canvas_to_floor = [&](int level, double cx, double cy) {
+    if (level == 0) return std::pair<double, double>{cx, cy};
+    return ref_to_tgt(xf, cx, cy);
+  };
+  auto floor_to_canvas = [&](int level, double fx, double fy) {
+    if (level == 0) return std::pair<double, double>{fx, fy};
+    return tgt_to_ref(xf, fx, fy);
+  };
+
+  if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape))
+    state.align_floors_placing = false;
+
+  static bool s_mpan = false;
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) s_mpan = true;
+  if (s_mpan) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+      canvas_.view_state().offset_x += io.MouseDelta.x;
+      canvas_.view_state().offset_y += io.MouseDelta.y;
+    } else s_mpan = false;
+  }
+
+  if (hovered && io.MouseWheel != 0.0f && !target.fiducials.empty() &&
+      xf.scale > 1e-12) {
+    double factor = 1.0 - (double)io.MouseWheel * 0.05;
+    if (factor < 0.1) factor = 0.1;
+    auto [piv_w_x, piv_w_y] = canvas_.screen_to_world(mouse);
+    // canvas -> target floorplan-px pivot through the full inverse chain.
+    auto [piv_t_x, piv_t_y] = canvas_to_floor(tgt, piv_w_x, piv_w_y);
+    for (Fiducial &f : target.fiducials) {
+      f.x = piv_t_x + factor * (f.x - piv_t_x);
+      f.y = piv_t_y + factor * (f.y - piv_t_y);
+    }
+    for (int i = 0; i < (int)target.fiducials.size(); ++i)
+      yjs_op_fiducial_replace(target.name, i, target.fiducials[i]);
+  }
+
+  auto hit = [&](int &out_level, int &out_idx) {
+    out_level = -1; out_idx = -1;
+    float best = kFidHitPx;
+    for (int i = 0; i < (int)ref.fiducials.size(); ++i) {
+      auto [wx, wy] = floor_to_canvas(0, ref.fiducials[i].x, ref.fiducials[i].y);
+      ImVec2 p = canvas_.world_to_screen(wx, wy);
+      float d = std::hypot(p.x - mouse.x, p.y - mouse.y);
+      if (d < best) { best = d; out_level = 0; out_idx = i; }
+    }
+    for (int i = 0; i < (int)target.fiducials.size(); ++i) {
+      auto [wx, wy] = floor_to_canvas(tgt, target.fiducials[i].x,
+                                      target.fiducials[i].y);
+      ImVec2 p = canvas_.world_to_screen(wx, wy);
+      float d = std::hypot(p.x - mouse.x, p.y - mouse.y);
+      if (d < best) { best = d; out_level = tgt; out_idx = i; }
+    }
+  };
+
+  static bool s_drag_single = false;
+  static bool s_drag_group = false;
+  static bool s_moved = false;
+
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    int hl = -1, hi = -1;
+    hit(hl, hi);
+    if (state.align_floors_placing) {
+      std::string name = state.align_floors_next_name;
+      if (name.empty())
+        name = "F" + std::to_string(state.align_floors_next_id);
+      auto [wx, wy] = canvas_.screen_to_world(mouse);
+      auto [rfx, rfy] = canvas_to_floor(0, wx, wy);
+      auto [tfx, tfy] = canvas_to_floor(tgt, wx, wy);
+      Fiducial rf, tf;
+      rf.name = name; rf.x = rfx; rf.y = rfy;
+      tf.name = name; tf.x = tfx; tf.y = tfy;
+      ref.fiducials.push_back(rf);
+      yjs_op_fiducial_add(ref.name, rf);
+      target.fiducials.push_back(tf);
+      yjs_op_fiducial_add(target.name, tf);
+      state.align_floors_sel_level = tgt;
+      state.align_floors_sel_idx = (int)target.fiducials.size() - 1;
+      state.align_floors_next_id += 1;
+      state.align_floors_next_name =
+          "F" + std::to_string(state.align_floors_next_id);
+      state.align_floors_placing = false;
+      s_drag_single = false;
+      s_drag_group = false;
+    } else if (hl >= 0) {
+      state.align_floors_sel_level = hl;
+      state.align_floors_sel_idx = hi;
+      s_drag_single = true;
+      s_moved = false;
+    } else {
+      s_drag_group = true;
+      s_moved = false;
+    }
+  }
+
+  if (s_drag_single && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    if (state.align_floors_sel_level < 0) {
+      s_drag_single = false;
+    } else if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
+      int lvl = state.align_floors_sel_level;
+      int idx = state.align_floors_sel_idx;
+      auto [wx, wy] = canvas_.screen_to_world(mouse);
+      auto [fx, fy] = canvas_to_floor(lvl, wx, wy);
+      if (lvl == 0 && idx >= 0 && idx < (int)ref.fiducials.size()) {
+        ref.fiducials[idx].x = fx;
+        ref.fiducials[idx].y = fy;
+        s_moved = true;
+      } else if (lvl == tgt && idx >= 0 &&
+                 idx < (int)target.fiducials.size() && xf.scale > 1e-12) {
+        target.fiducials[idx].x = fx;
+        target.fiducials[idx].y = fy;
+        s_moved = true;
+      }
+    }
+  }
+
+  if (s_drag_group && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+      !target.fiducials.empty() && xf.scale > 1e-12) {
+    if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
+      // Compute target-fp delta by diffing canvas_to_floor at two cursor pos.
+      ImVec2 prev(mouse.x - io.MouseDelta.x, mouse.y - io.MouseDelta.y);
+      auto [w_new_x, w_new_y] = canvas_.screen_to_world(mouse);
+      auto [w_old_x, w_old_y] = canvas_.screen_to_world(prev);
+      auto [f_new_x, f_new_y] = canvas_to_floor(tgt, w_new_x, w_new_y);
+      auto [f_old_x, f_old_y] = canvas_to_floor(tgt, w_old_x, w_old_y);
+      double dix = f_new_x - f_old_x;
+      double diy = f_new_y - f_old_y;
+      for (Fiducial &f : target.fiducials) { f.x -= dix; f.y -= diy; }
+      s_moved = true;
+    }
+  }
+
+  if ((s_drag_single || s_drag_group) &&
+      ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+    if (s_drag_single && s_moved && state.align_floors_sel_level >= 0) {
+      int lvl = state.align_floors_sel_level;
+      int idx = state.align_floors_sel_idx;
+      if (lvl == 0 && idx >= 0 && idx < (int)ref.fiducials.size())
+        yjs_op_fiducial_replace(ref.name, idx, ref.fiducials[idx]);
+      else if (lvl == tgt && idx >= 0 && idx < (int)target.fiducials.size())
+        yjs_op_fiducial_replace(target.name, idx, target.fiducials[idx]);
+    } else if (s_drag_group && s_moved) {
+      for (int i = 0; i < (int)target.fiducials.size(); ++i)
+        yjs_op_fiducial_replace(target.name, i, target.fiducials[i]);
+    }
+    s_drag_single = false;
+    s_drag_group = false;
+    s_moved = false;
+  }
+
+  if (state.align_floors_sel_level >= 0 && !io.WantTextInput &&
+      ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+    int lvl = state.align_floors_sel_level;
+    int idx = state.align_floors_sel_idx;
+    Level *L = (lvl == 0) ? &ref : (lvl == tgt) ? &target : nullptr;
+    if (L && idx >= 0 && idx < (int)L->fiducials.size()) {
+      yjs_op_fiducial_delete(L->name, idx);
+      L->fiducials.erase(L->fiducials.begin() + idx);
+    }
+    state.align_floors_sel_level = -1;
+    state.align_floors_sel_idx = -1;
   }
 }
 

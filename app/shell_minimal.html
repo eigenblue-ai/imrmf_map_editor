@@ -252,6 +252,9 @@
           layerSet: () => {},
           layerDelete: () => {},
           layerReorder: () => {},
+          fiducialAdd: () => {},
+          fiducialReplace: () => {},
+          fiducialDelete: () => {},
           undo: () => {},
           redo: () => {},
           canUndo: () => false,
@@ -470,6 +473,32 @@
             layers.delete(layerName);
           }, "local");
         }
+        function fiducialAdd(levelName, fiducialYaml) {
+          const parsed = parseYamlOrLog(fiducialYaml, "fiducial");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const fiducials = getOrCreateArr(getLevel(levelName), "fiducials");
+            attachArrayInto(fiducials, fiducials.length, parsed);
+          }, "local");
+        }
+        function fiducialReplace(levelName, idx, fiducialYaml) {
+          const parsed = parseYamlOrLog(fiducialYaml, "fiducial");
+          if (!Array.isArray(parsed)) return;
+          doc.transact(() => {
+            const fiducials = getLevel(levelName).get("fiducials");
+            if (!fiducials || idx < 0 || idx >= fiducials.length) return;
+            fiducials.delete(idx, 1);
+            attachArrayInto(fiducials, idx, parsed);
+          }, "local");
+        }
+        function fiducialDelete(levelName, idx) {
+          doc.transact(() => {
+            const fiducials = getLevel(levelName).get("fiducials");
+            if (!fiducials || idx < 0 || idx >= fiducials.length) return;
+            fiducials.delete(idx, 1);
+          }, "local");
+        }
+
         // Y.Map iteration order is insertion order with no positional ops, so
         // reorder is: snapshot, wipe, re-insert in the requested order.
         function layerReorder(levelName, names) {
@@ -516,6 +545,9 @@
           layerSet,
           layerDelete,
           layerReorder,
+          fiducialAdd,
+          fiducialReplace,
+          fiducialDelete,
           undo: () => undoManager.undo(),
           redo: () => undoManager.redo(),
           canUndo: () => undoManager.canUndo(),
