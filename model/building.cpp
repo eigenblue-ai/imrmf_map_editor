@@ -45,46 +45,18 @@ double direct_mpp(const Level &level) {
   return count > 0 ? sum / count : 0.0;
 }
 
-struct FidPoint {
-  std::string name;
-  double x = 0.0;
-  double y = 0.0;
-};
-
-std::vector<FidPoint> extract_fiducials(const Level &level) {
-  std::vector<FidPoint> out;
-  if (!level.passthrough || !level.passthrough.IsMap())
-    return out;
-  YAML::Node fids = level.passthrough["fiducials"];
-  if (!fids || !fids.IsSequence())
-    return out;
-  for (const auto &f : fids) {
-    if (!f.IsSequence() || f.size() < 3)
-      continue;
-    FidPoint p;
-    p.x = f[0].as<double>(0.0);
-    p.y = f[1].as<double>(0.0);
-    p.name = f[2].as<std::string>("");
-    if (!p.name.empty())
-      out.push_back(p);
-  }
-  return out;
-}
-
-// Averaged pixel-distance ratio between fiducials shared by ref and other.
 double fiducial_distance_ratio(const Level &ref, const Level &other) {
-  auto rf = extract_fiducials(ref);
-  auto of = extract_fiducials(other);
-  if (rf.size() < 2 || of.size() < 2)
+  if (ref.fiducials.size() < 2 || other.fiducials.size() < 2)
     return 0.0;
-  std::unordered_map<std::string, FidPoint> ref_by_name;
-  for (const auto &p : rf)
-    ref_by_name[p.name] = p;
-  std::vector<std::pair<FidPoint, FidPoint>> pairs;
-  for (const auto &p : of) {
+  std::unordered_map<std::string, const Fiducial *> ref_by_name;
+  for (const Fiducial &p : ref.fiducials)
+    if (!p.name.empty())
+      ref_by_name[p.name] = &p;
+  std::vector<std::pair<const Fiducial *, const Fiducial *>> pairs;
+  for (const Fiducial &p : other.fiducials) {
     auto it = ref_by_name.find(p.name);
     if (it != ref_by_name.end())
-      pairs.push_back({it->second, p});
+      pairs.push_back({it->second, &p});
   }
   if (pairs.size() < 2)
     return 0.0;
@@ -92,10 +64,10 @@ double fiducial_distance_ratio(const Level &ref, const Level &other) {
   int n = 0;
   for (size_t i = 0; i < pairs.size(); ++i) {
     for (size_t j = i + 1; j < pairs.size(); ++j) {
-      double rdx = pairs[i].first.x - pairs[j].first.x;
-      double rdy = pairs[i].first.y - pairs[j].first.y;
-      double odx = pairs[i].second.x - pairs[j].second.x;
-      double ody = pairs[i].second.y - pairs[j].second.y;
+      double rdx = pairs[i].first->x - pairs[j].first->x;
+      double rdy = pairs[i].first->y - pairs[j].first->y;
+      double odx = pairs[i].second->x - pairs[j].second->x;
+      double ody = pairs[i].second->y - pairs[j].second->y;
       double rdist = std::sqrt(rdx * rdx + rdy * rdy);
       double odist = std::sqrt(odx * odx + ody * ody);
       if (rdist > 0.0 && odist > 0.0) {
@@ -168,6 +140,69 @@ void delete_lane(Level &level, int lane_idx) {
   if (lane_idx < 0 || lane_idx >= (int)level.lanes.size())
     return;
   level.lanes.erase(level.lanes.begin() + lane_idx);
+}
+
+FloorTransform compute_floor_transform(const std::vector<Fiducial> &ref,
+                                       const std::vector<Fiducial> &target,
+                                       double default_scale) {
+  FloorTransform out;
+  out.scale = default_scale;
+  std::vector<std::pair<const Fiducial *, const Fiducial *>> pairs;
+  for (const Fiducial &r : ref) {
+    if (r.name.empty()) continue;
+    for (const Fiducial &t : target) {
+      if (t.name == r.name) {
+        pairs.push_back({&r, &t});
+        break;
+      }
+    }
+  }
+  out.matched = (int)pairs.size();
+  if (pairs.empty()) return out;
+  if (pairs.size() == 1) {
+    out.tx = pairs[0].first->x - default_scale * pairs[0].second->x;
+    out.ty = pairs[0].first->y - default_scale * pairs[0].second->y;
+    return out;
+  }
+  double rcx = 0, rcy = 0, tcx = 0, tcy = 0;
+  for (auto &p : pairs) {
+    rcx += p.first->x; rcy += p.first->y;
+    tcx += p.second->x; tcy += p.second->y;
+  }
+  double n = (double)pairs.size();
+  rcx /= n; rcy /= n; tcx /= n; tcy /= n;
+  double A = 0, B = 0, sum_t_sq = 0;
+  for (auto &p : pairs) {
+    double rx = p.first->x - rcx, ry = p.first->y - rcy;
+    double tx = p.second->x - tcx, ty = p.second->y - tcy;
+    A += rx * tx + ry * ty;
+    B += ry * tx - rx * ty;
+    sum_t_sq += tx * tx + ty * ty;
+  }
+  out.yaw = std::atan2(B, A);
+  if (sum_t_sq > 1e-12)
+    out.scale = std::sqrt(A * A + B * B) / sum_t_sq;
+  double cy = std::cos(out.yaw), sy = std::sin(out.yaw);
+  out.tx = rcx - out.scale * (cy * tcx - sy * tcy);
+  out.ty = rcy - out.scale * (sy * tcx + cy * tcy);
+  return out;
+}
+
+std::pair<double, double> tgt_to_ref(const FloorTransform &xf, double ix,
+                                     double iy) {
+  double cy = std::cos(xf.yaw), sy = std::sin(xf.yaw);
+  double a = ix * xf.scale, b = iy * xf.scale;
+  return {xf.tx + cy * a - sy * b, xf.ty + sy * a + cy * b};
+}
+
+std::pair<double, double> ref_to_tgt(const FloorTransform &xf, double rx,
+                                     double ry) {
+  if (xf.scale < 1e-12) return {0.0, 0.0};
+  double cy = std::cos(xf.yaw), sy = std::sin(xf.yaw);
+  double dx = rx - xf.tx, dy = ry - xf.ty;
+  double ix = (cy * dx + sy * dy) / xf.scale;
+  double iy = (-sy * dx + cy * dy) / xf.scale;
+  return {ix, iy};
 }
 
 } // namespace imrmf::map_editor
