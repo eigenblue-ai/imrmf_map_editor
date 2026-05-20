@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <utility>
 #include <vector>
 
@@ -138,6 +139,8 @@ void apply_align(Level &level, const std::vector<int> &sel, AlignDir dir,
   }
 }
 
+bool g_readonly = false;
+
 // Fine-grained Yjs op wrappers
 #ifdef __EMSCRIPTEN__
 // Forward decls of the EM_JS bridges defined below.
@@ -159,6 +162,7 @@ void mevjs_fiducial_delete(const char *level, int idx);
 #endif
 
 void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_add(level.c_str(), y.c_str());
@@ -168,6 +172,7 @@ void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
 #endif
 }
 void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_replace(level.c_str(), idx, y.c_str());
@@ -178,6 +183,7 @@ void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
 #endif
 }
 void yjs_op_vertex_delete(const std::string &level, int idx) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   mevjs_vertex_delete(level.c_str(), idx);
 #else
@@ -186,6 +192,7 @@ void yjs_op_vertex_delete(const std::string &level, int idx) {
 #endif
 }
 void yjs_op_lane_add(const std::string &level, const Lane &l) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_add(level.c_str(), y.c_str());
@@ -195,6 +202,7 @@ void yjs_op_lane_add(const std::string &level, const Lane &l) {
 #endif
 }
 void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_replace(level.c_str(), idx, y.c_str());
@@ -205,6 +213,7 @@ void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
 #endif
 }
 void yjs_op_lane_delete(const std::string &level, int idx) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   mevjs_lane_delete(level.c_str(), idx);
 #else
@@ -213,6 +222,7 @@ void yjs_op_lane_delete(const std::string &level, int idx) {
 #endif
 }
 void yjs_op_layer_set(const std::string &level, const Layer &L) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_layer(L);
   mevjs_layer_set(level.c_str(), L.name.c_str(), y.c_str());
@@ -222,6 +232,7 @@ void yjs_op_layer_set(const std::string &level, const Layer &L) {
 #endif
 }
 void yjs_op_layer_delete(const std::string &level, const std::string &name) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   mevjs_layer_delete(level.c_str(), name.c_str());
 #else
@@ -230,6 +241,7 @@ void yjs_op_layer_delete(const std::string &level, const std::string &name) {
 #endif
 }
 void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_add(level.c_str(), y.c_str());
@@ -240,6 +252,7 @@ void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
 }
 void yjs_op_fiducial_replace(const std::string &level, int idx,
                              const Fiducial &f) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_replace(level.c_str(), idx, y.c_str());
@@ -250,6 +263,7 @@ void yjs_op_fiducial_replace(const std::string &level, int idx,
 #endif
 }
 void yjs_op_fiducial_delete(const std::string &level, int idx) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   mevjs_fiducial_delete(level.c_str(), idx);
 #else
@@ -260,6 +274,7 @@ void yjs_op_fiducial_delete(const std::string &level, int idx) {
 
 void yjs_op_layer_reorder(const std::string &level,
                           const std::vector<std::string> &names) {
+  if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
   // Emit a JSON array of layer names — JSON.parse on the JS side.
   std::string buf = "[";
@@ -550,6 +565,40 @@ EditorView::EditorView(std::string /*image_root_unused*/,
 
 EditorView::~EditorView() = default;
 
+void EditorView::apply_snapshot_dir(const std::string &dir) {
+  auto enc = [](const std::string &s) {
+    std::string o;
+    o.reserve(s.size() * 3);
+    char buf[4];
+    for (unsigned char c : s) {
+      bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                        c == '.' || c == '~';
+      if (unreserved) {
+        o.push_back((char)c);
+      } else {
+        std::snprintf(buf, sizeof(buf), "%%%02X", c);
+        o.append(buf);
+      }
+    }
+    return o;
+  };
+  if (dir.empty()) {
+    texture_provider_->set_url_builder(
+        [enc](const std::string &id, const std::string &path) {
+          return "/layer_asset?id=" + enc(id) + "&path=" + enc(path);
+        });
+  } else {
+    std::string d = dir;
+    texture_provider_->set_url_builder(
+        [enc, d](const std::string &id, const std::string &path) {
+          return "/snapshot_asset?id=" + enc(id) + "&dir=" + enc(d) +
+                 "&path=" + enc(path);
+        });
+  }
+  texture_provider_->clear_cache();
+}
+
 void EditorView::draw(Building &building, EditorState &state,
                       const std::function<void()> &save_callback,
                       const TopBarHooks &top_bar) {
@@ -581,7 +630,16 @@ void EditorView::draw(Building &building, EditorState &state,
   ImGui::BeginChild("canvas_region", canvas_region, false,
                     ImGuiWindowFlags_NoScrollbar |
                         ImGuiWindowFlags_NoScrollWithMouse);
-  draw_canvas(building, state);
+  {
+    const float version_h = 32.0f;
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImGui::BeginChild("##canvas_box", ImVec2(avail.x, avail.y - version_h), false,
+                      ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
+    draw_canvas(building, state);
+    ImGui::EndChild();
+    draw_version_strip(state);
+  }
   ImGui::EndChild();
 
   ImGui::SameLine();
@@ -590,6 +648,10 @@ void EditorView::draw(Building &building, EditorState &state,
   if (state.align_floors_mode) {
     draw_align_floors_panel(building, state);
   } else {
+    ImGui::TextDisabled("View");
+    ImGui::Checkbox("Show fiducials", &state.show_fiducials);
+    if (!state.show_fiducials) state.selected_fiducial_idx = -1;
+    ImGui::Separator();
     draw_add_layer_section(building, state);
     ImGui::Separator();
     draw_layer_config_panel(building, state);
@@ -987,10 +1049,28 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       c.draw_list()->AddRect(lo, hi, IM_COL32(180, 210, 255, 200), 0.0f, 0,
                              1.5f);
     }
+    if (state.show_fiducials) {
+      ImDrawList *dl = c.draw_list();
+      for (int i = 0; i < (int)level.fiducials.size(); ++i) {
+        const Fiducial &f = level.fiducials[i];
+        ImVec2 p = c.world_to_screen(f.x, f.y);
+        bool sel = (state.selected_fiducial_idx == i);
+        const float r = sel ? 8.0f : 6.0f;
+        ImU32 col = IM_COL32(110, 220, 120, 255);
+        ImVec2 a(p.x, p.y - r), b(p.x + r, p.y);
+        ImVec2 d(p.x, p.y + r), e(p.x - r, p.y);
+        dl->AddQuadFilled(a, b, d, e, col);
+        dl->AddQuad(a, b, d, e,
+                    sel ? IM_COL32(255, 255, 255, 255)
+                        : IM_COL32(20, 20, 20, 220),
+                    sel ? 2.5f : 1.5f);
+        if (!f.name.empty())
+          dl->AddText(ImVec2(p.x + 8.0f, p.y - 8.0f), col, f.name.c_str());
+      }
+    }
   };
   canvas_.draw(building, state.level_idx, opts);
-  canvas::draw_mouse_coord_hud(canvas_,
-                               compute_level_mpp(building, state.level_idx));
+  canvas::draw_mouse_coord_hud(canvas_, building, state.level_idx);
 
   int new_idx = state.level_idx;
   if (canvas::draw_level_selector_overlay(building, new_idx, canvas_) &&
@@ -1054,6 +1134,60 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     return canvas_.world_to_screen(wx, wy);
   };
   auto screen_to_world = [&](ImVec2 sp) { return canvas_.screen_to_world(sp); };
+
+  static bool s_fid_dragging = false;
+  static bool s_fid_moved = false;
+  if (state.show_fiducials) {
+    auto hit_fid = [&](ImVec2 m) -> int {
+      int best = -1;
+      float best_d = 9.0f;
+      for (int i = 0; i < (int)level.fiducials.size(); ++i) {
+        ImVec2 p = world_to_screen(level.fiducials[i].x, level.fiducials[i].y);
+        float dx = m.x - p.x, dy = m.y - p.y;
+        float d = std::sqrt(dx * dx + dy * dy);
+        if (d < best_d) { best_d = d; best = i; }
+      }
+      return best;
+    };
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+      int hi = hit_fid(mouse);
+      if (hi >= 0) {
+        state.selected_fiducial_idx = hi;
+        s_fid_dragging = true;
+        s_fid_moved = false;
+      }
+    }
+    if (s_fid_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+        state.selected_fiducial_idx >= 0 &&
+        state.selected_fiducial_idx < (int)level.fiducials.size()) {
+      if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) {
+        auto [wx, wy] = canvas_.screen_to_world(mouse);
+        Fiducial &f = level.fiducials[state.selected_fiducial_idx];
+        f.x = wx;
+        f.y = wy;
+        s_fid_moved = true;
+      }
+      return;
+    }
+    if (s_fid_dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      if (s_fid_moved && state.selected_fiducial_idx >= 0 &&
+          state.selected_fiducial_idx < (int)level.fiducials.size()) {
+        yjs_op_fiducial_replace(level.name, state.selected_fiducial_idx,
+                                level.fiducials[state.selected_fiducial_idx]);
+      }
+      s_fid_dragging = false;
+      s_fid_moved = false;
+      return;
+    }
+    if (state.selected_fiducial_idx >= 0 &&
+        state.selected_fiducial_idx < (int)level.fiducials.size() &&
+        !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+      yjs_op_fiducial_delete(level.name, state.selected_fiducial_idx);
+      level.fiducials.erase(level.fiducials.begin() +
+                            state.selected_fiducial_idx);
+      state.selected_fiducial_idx = -1;
+    }
+  }
 
   auto hit_vertex = [&](ImVec2 m) -> int {
     int best = -1;
@@ -2540,5 +2674,90 @@ void EditorView::handle_floor_align_input(Building &building,
     state.align_floors_sel_idx = -1;
   }
 }
+
+void EditorView::draw_version_strip(EditorState &state) {
+  const bool on_snapshot = !state.snapshot_dir.empty();
+  if (on_snapshot)
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(60, 40, 30, 255));
+  ImGui::BeginChild("##version_strip", ImVec2(0, 0), false,
+                    ImGuiWindowFlags_NoScrollbar);
+  ImGui::AlignTextToFramePadding();
+  if (on_snapshot)
+    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+                       "Read-only snapshot:");
+  else
+    ImGui::TextUnformatted("Version:");
+  ImGui::SameLine();
+
+  std::string preview = on_snapshot ? state.snapshot_dir : std::string("latest");
+  ImGui::SetNextItemWidth(220.0f);
+  if (ImGui::BeginCombo("##version_combo", preview.c_str())) {
+    if (ImGui::Selectable("latest", !on_snapshot))
+      state.snapshot_request_unload = "1";
+    for (const auto &s : state.snapshots) {
+      char label[128];
+      std::time_t t = (std::time_t)s.created_at;
+      std::tm tm_utc{};
+#if defined(_WIN32)
+      gmtime_s(&tm_utc, &t);
+#else
+      gmtime_r(&t, &tm_utc);
+#endif
+      std::snprintf(label, sizeof(label),
+                    "%s  %04d-%02d-%02d %02d:%02d", s.sha.c_str(),
+                    tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                    tm_utc.tm_hour, tm_utc.tm_min);
+      bool sel = (s.dir == state.snapshot_dir);
+      if (ImGui::Selectable(label, sel))
+        state.snapshot_request_load = s.dir;
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Refresh##snap"))
+    state.snapshot_request_refresh = true;
+  ImGui::SameLine();
+  if (on_snapshot) {
+    ImGui::BeginDisabled();
+    ImGui::Button("Snapshot");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(170, 80, 60, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 100, 70, 255));
+    if (ImGui::Button("Restore to latest"))
+      ImGui::OpenPopup("##restore_confirm");
+    ImGui::PopStyleColor(2);
+  } else {
+    if (ImGui::Button("Snapshot"))
+      state.snapshot_request_create = true;
+  }
+
+  if (ImGui::BeginPopupModal("##restore_confirm", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Overwrite latest with snapshot %s?",
+                state.snapshot_dir.c_str());
+    ImGui::TextDisabled("Connected users will see the restored state.");
+    ImGui::Separator();
+    if (ImGui::Button("Restore", ImVec2(120, 0))) {
+      state.snapshot_request_restore = state.snapshot_dir;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)))
+      ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  if (!state.snapshot_status.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", state.snapshot_status.c_str());
+  }
+  ImGui::EndChild();
+  if (on_snapshot)
+    ImGui::PopStyleColor();
+}
+
+void set_yjs_readonly(bool v) { g_readonly = v; }
+bool yjs_readonly() { return g_readonly; }
 
 } // namespace imrmf::map_editor

@@ -361,6 +361,7 @@ Building parse_building(const std::string &yaml_text) {
     if (!is_known_building_key(key))
       b.passthrough[key] = it->second;
   }
+  snapshot_level_mpps(b);
   return b;
 }
 

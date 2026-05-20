@@ -45,64 +45,86 @@ double direct_mpp(const Level &level) {
   return count > 0 ? sum / count : 0.0;
 }
 
-double fiducial_distance_ratio(const Level &ref, const Level &other) {
-  if (ref.fiducials.size() < 2 || other.fiducials.size() < 2)
-    return 0.0;
-  std::unordered_map<std::string, const Fiducial *> ref_by_name;
-  for (const Fiducial &p : ref.fiducials)
-    if (!p.name.empty())
-      ref_by_name[p.name] = &p;
-  std::vector<std::pair<const Fiducial *, const Fiducial *>> pairs;
-  for (const Fiducial &p : other.fiducials) {
-    auto it = ref_by_name.find(p.name);
-    if (it != ref_by_name.end())
-      pairs.push_back({it->second, &p});
-  }
-  if (pairs.size() < 2)
-    return 0.0;
-  double sum = 0.0;
-  int n = 0;
-  for (size_t i = 0; i < pairs.size(); ++i) {
-    for (size_t j = i + 1; j < pairs.size(); ++j) {
-      double rdx = pairs[i].first->x - pairs[j].first->x;
-      double rdy = pairs[i].first->y - pairs[j].first->y;
-      double odx = pairs[i].second->x - pairs[j].second->x;
-      double ody = pairs[i].second->y - pairs[j].second->y;
-      double rdist = std::sqrt(rdx * rdx + rdy * rdy);
-      double odist = std::sqrt(odx * odx + ody * ody);
-      if (rdist > 0.0 && odist > 0.0) {
-        sum += rdist / odist;
-        ++n;
-      }
-    }
-  }
-  return n > 0 ? sum / n : 0.0;
-}
-
 } // namespace
 
 double compute_level_mpp(const Building &building, int level_idx) {
   if (level_idx < 0 || level_idx >= (int)building.levels.size())
     return 0.0;
   const Level &self = building.levels[level_idx];
-
+  if (self.mpp_snapshot > 0.0)
+    return self.mpp_snapshot;
   double direct = direct_mpp(self);
   if (direct > 0.0)
     return direct;
-
-  for (size_t i = 0; i < building.levels.size(); ++i) {
-    if ((int)i == level_idx)
-      continue;
-    const Level &other = building.levels[i];
-    double other_mpp = direct_mpp(other);
-    if (other_mpp <= 0.0)
-      continue;
-    double ratio = fiducial_distance_ratio(other, self);
-    if (ratio > 0.0)
-      return other_mpp * ratio;
+  for (const Level &other : building.levels) {
+    double m = direct_mpp(other);
+    if (m > 0.0)
+      return m;
   }
-
   return 0.0;
+}
+
+int main_level_idx(const Building &building) {
+  for (int i = 0; i < (int)building.levels.size(); ++i) {
+    if (direct_mpp(building.levels[i]) > 0.0)
+      return i;
+  }
+  return -1;
+}
+
+std::pair<double, double> rmf_to_level_px(const Building &building,
+                                          int level_idx, double rmf_x,
+                                          double rmf_y) {
+  int main_idx = main_level_idx(building);
+  if (main_idx < 0) main_idx = 0;
+  if (building.levels.empty()) return {0.0, 0.0};
+  double mpp = direct_mpp(building.levels[main_idx]);
+  if (mpp <= 0.0) mpp = compute_level_mpp(building, main_idx);
+  if (mpp <= 0.0) mpp = 1.0;
+  double mx = rmf_x / mpp;
+  double my = -rmf_y / mpp;
+  if (level_idx == main_idx || level_idx < 0 ||
+      level_idx >= (int)building.levels.size())
+    return {mx, my};
+  FloorTransform xf = compute_floor_transform(
+      building.levels[main_idx].fiducials,
+      building.levels[level_idx].fiducials, 1.0);
+  return ref_to_tgt(xf, mx, my);
+}
+
+std::pair<double, double> level_px_to_rmf(const Building &building,
+                                          int level_idx, double px_x,
+                                          double px_y) {
+  int main_idx = main_level_idx(building);
+  if (main_idx < 0) main_idx = 0;
+  if (building.levels.empty()) return {0.0, 0.0};
+  double mpp = direct_mpp(building.levels[main_idx]);
+  if (mpp <= 0.0) mpp = compute_level_mpp(building, main_idx);
+  if (mpp <= 0.0) mpp = 1.0;
+  double mx = px_x, my = px_y;
+  if (level_idx != main_idx && level_idx >= 0 &&
+      level_idx < (int)building.levels.size()) {
+    FloorTransform xf = compute_floor_transform(
+        building.levels[main_idx].fiducials,
+        building.levels[level_idx].fiducials, 1.0);
+    auto p = tgt_to_ref(xf, mx, my);
+    mx = p.first; my = p.second;
+  }
+  return {mx * mpp, -my * mpp};
+}
+
+void snapshot_level_mpps(Building &building) {
+  double fallback = 0.0;
+  for (const Level &lvl : building.levels) {
+    double m = direct_mpp(lvl);
+    if (m > 0.0) { fallback = m; break; }
+  }
+  for (Level &lvl : building.levels) {
+    if (lvl.mpp_snapshot > 0.0)
+      continue;
+    double m = direct_mpp(lvl);
+    lvl.mpp_snapshot = m > 0.0 ? m : fallback;
+  }
 }
 
 std::vector<int> lanes_referencing_vertex(const Level &level, int vertex_idx) {

@@ -10,7 +10,7 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use bytes::Bytes;
 
-use super::{MountInfo, Storage};
+use super::{MountInfo, SnapshotInfo, Storage};
 
 /// Each building lives at `<prefix>/<id>/<id>.building.yaml`
 pub struct S3Storage {
@@ -90,6 +90,24 @@ impl S3Storage {
 
     fn asset_key(&self, building_id: &str, path: &str) -> String {
         join_key(&self.prefix, &format!("{building_id}/{path}"))
+    }
+
+    fn snapshots_prefix(&self, building_id: &str) -> String {
+        join_key(&self.prefix, &format!("{building_id}/snapshots/"))
+    }
+
+    fn snapshot_yaml_key(&self, building_id: &str, dir: &str) -> String {
+        join_key(
+            &self.prefix,
+            &format!("{building_id}/snapshots/{dir}/{building_id}.building.yaml"),
+        )
+    }
+
+    fn snapshot_asset_key(&self, building_id: &str, dir: &str, path: &str) -> String {
+        join_key(
+            &self.prefix,
+            &format!("{building_id}/snapshots/{dir}/{path}"),
+        )
     }
 
     fn cache_path(&self, building_id: &str) -> PathBuf {
@@ -246,6 +264,92 @@ impl Storage for S3Storage {
             prefix: self.prefix.clone(),
             region: self.region.clone(),
         }
+    }
+
+    async fn list_snapshots(&self, building_id: &str) -> Result<Vec<SnapshotInfo>> {
+        let snap_prefix = self.snapshots_prefix(building_id);
+        let resp = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&snap_prefix)
+            .delimiter("/")
+            .send()
+            .await
+            .context("s3 list_snapshots")?;
+        let mut out = Vec::new();
+        for cp in resp.common_prefixes() {
+            let Some(p) = cp.prefix() else { continue };
+            let dir = p.strip_prefix(&snap_prefix).unwrap_or(p).trim_end_matches('/');
+            if let Some(info) = SnapshotInfo::parse_dir(dir) {
+                out.push(info);
+            }
+        }
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(out)
+    }
+
+    async fn create_snapshot(
+        &self,
+        building_id: &str,
+        snap: &SnapshotInfo,
+        yaml: &str,
+        assets: &[(String, Bytes)],
+    ) -> Result<()> {
+        let yaml_key = self.snapshot_yaml_key(building_id, &snap.dir);
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&yaml_key)
+            .body(yaml.as_bytes().to_vec().into())
+            .content_type("text/yaml")
+            .send()
+            .await
+            .with_context(|| format!("s3 put {}", yaml_key))?;
+        for (path, bytes) in assets {
+            let key = self.snapshot_asset_key(building_id, &snap.dir, path);
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(&key)
+                .body(bytes.to_vec().into())
+                .send()
+                .await
+                .with_context(|| format!("s3 put {}", key))?;
+        }
+        Ok(())
+    }
+
+    async fn read_snapshot_yaml(&self, building_id: &str, dir: &str) -> Result<String> {
+        let key = self.snapshot_yaml_key(building_id, dir);
+        let resp = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .with_context(|| format!("s3 get {}", key))?;
+        let bytes = resp.body.collect().await?.into_bytes();
+        String::from_utf8(bytes.to_vec()).with_context(|| format!("yaml not utf-8: {}", key))
+    }
+
+    async fn read_snapshot_asset(
+        &self,
+        building_id: &str,
+        dir: &str,
+        path: &str,
+    ) -> Result<Bytes> {
+        let key = self.snapshot_asset_key(building_id, dir, path);
+        let resp = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .with_context(|| format!("s3 get {}", key))?;
+        Ok(resp.body.collect().await?.into_bytes())
     }
 }
 

@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use super::{MountInfo, Storage};
+use super::{MountInfo, SnapshotInfo, Storage};
 
 /// Filesystem-backed storage. Accepts two layouts:
 ///
@@ -209,5 +209,76 @@ impl Storage for LocalFsStorage {
         MountInfo::Local {
             path: self.root.display().to_string(),
         }
+    }
+
+    async fn list_snapshots(&self, building_id: &str) -> Result<Vec<SnapshotInfo>> {
+        let snap_root = self.asset_root_for(building_id).join("snapshots");
+        let mut out = Vec::new();
+        let Ok(rd) = tokio::fs::read_dir(&snap_root).await else {
+            return Ok(out);
+        };
+        let mut rd = rd;
+        while let Some(entry) = rd.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            if let Some(info) = SnapshotInfo::parse_dir(&name) {
+                out.push(info);
+            }
+        }
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(out)
+    }
+
+    async fn create_snapshot(
+        &self,
+        building_id: &str,
+        snap: &SnapshotInfo,
+        yaml: &str,
+        assets: &[(String, Bytes)],
+    ) -> Result<()> {
+        let snap_dir = self
+            .asset_root_for(building_id)
+            .join("snapshots")
+            .join(&snap.dir);
+        tokio::fs::create_dir_all(&snap_dir).await?;
+        let yaml_path = snap_dir.join(format!("{building_id}.building.yaml"));
+        tokio::fs::write(&yaml_path, yaml).await?;
+        for (path, bytes) in assets {
+            let dest = snap_dir.join(path);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::write(&dest, &bytes).await?;
+        }
+        Ok(())
+    }
+
+    async fn read_snapshot_yaml(&self, building_id: &str, dir: &str) -> Result<String> {
+        let p = self
+            .asset_root_for(building_id)
+            .join("snapshots")
+            .join(dir)
+            .join(format!("{building_id}.building.yaml"));
+        let resolved = self.check_inside_root(&p)?;
+        Ok(tokio::fs::read_to_string(&resolved).await?)
+    }
+
+    async fn read_snapshot_asset(
+        &self,
+        building_id: &str,
+        dir: &str,
+        path: &str,
+    ) -> Result<Bytes> {
+        let p = self
+            .asset_root_for(building_id)
+            .join("snapshots")
+            .join(dir)
+            .join(path);
+        let resolved = self.check_inside_root(&p)?;
+        Ok(Bytes::from(tokio::fs::read(&resolved).await?))
     }
 }

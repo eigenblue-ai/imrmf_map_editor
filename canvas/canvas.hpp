@@ -37,6 +37,8 @@ public:
                         const std::string &asset_path, double tint_r,
                         double tint_g, double tint_b);
 
+  void clear_cache() { textures_.clear(); }
+
 protected:
   virtual void trigger_load(LayerTexture &out, const std::string &asset_id,
                             const std::string &asset_path, double tint_r,

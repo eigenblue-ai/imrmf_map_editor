@@ -42,4 +42,10 @@ void draw_layers_overlay(
 void draw_mouse_coord_hud(const MapCanvas &canvas, double ref_mpp,
                           const FloorTransform *xf = nullptr);
 
+// Anchors to the main floor (level with direct measurements) via the imrmf
+// rmf <-> pixel utility, so editor and runner agree byte-for-byte on the same
+// canvas pixel.
+void draw_mouse_coord_hud(const MapCanvas &canvas, const Building &building,
+                          int level_idx);
+
 } // namespace imrmf::map_editor::canvas

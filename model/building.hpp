@@ -96,6 +96,7 @@ struct Level {
   std::vector<Fiducial> fiducials;
   std::vector<Layer> layers;
   YAML::Node passthrough; // walls, fiducials, measurements, doors, ...
+  double mpp_snapshot = 0.0;
 };
 
 struct Building {
@@ -107,6 +108,25 @@ struct Building {
 
 // Meters / pixel
 double compute_level_mpp(const Building &building, int level_idx);
+
+void snapshot_level_mpps(Building &building);
+
+// Floor that has direct measurement vertices; the /map frame is anchored here.
+// Returns -1 if none.
+int main_level_idx(const Building &building);
+
+// rmf-meters (y-up) -> level's floorplan-pixel (y-down). For the main floor it's
+// the direct meter/mpp transform; for any other floor it composes the inter-floor
+// fiducial fit on top. Use this anywhere a world-frame pose needs to land on a
+// per-level canvas (robot poses in runner, cross-floor POIs in editor).
+std::pair<double, double> rmf_to_level_px(const Building &building,
+                                          int level_idx, double rmf_x,
+                                          double rmf_y);
+
+// Inverse of rmf_to_level_px.
+std::pair<double, double> level_px_to_rmf(const Building &building,
+                                          int level_idx, double px_x,
+                                          double px_y);
 
 // Affine in pixel-y-down space. Forward (tgt_to_ref) maps target-level pixels
 // to reference-level pixels; inverse (ref_to_tgt) goes the other way. Fit via
