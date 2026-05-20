@@ -11,7 +11,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::serve as axum_serve;
 use axum::Router;
 use futures::{SinkExt, StreamExt};
@@ -59,6 +59,19 @@ pub async fn run(
         .route("/buildings", get(buildings_list_handler))
         .route("/buildings/:id/load", post(building_load_handler))
         .route("/buildings/:id/nav_graph/:fleet_id", get(nav_graph_handler))
+        .route(
+            "/buildings/:id/snapshots",
+            get(list_snapshots_handler).post(create_snapshot_handler),
+        )
+        .route(
+            "/buildings/:id/snapshots/:dir/yaml",
+            get(snapshot_yaml_handler),
+        )
+        .route(
+            "/buildings/:id/snapshots/:dir/restore",
+            post(restore_snapshot_handler),
+        )
+        .route("/snapshot_asset", get(snapshot_asset_handler))
         .route("/buildings/:id", get(building_get_handler).put(building_put_handler))
         .route(
             "/layer_asset",
@@ -396,6 +409,102 @@ async fn revert_handler(State(rs): State<RouteState>) -> Response {
         Ok(()) => (StatusCode::OK, "reverted").into_response(),
         Err(e) => (StatusCode::CONFLICT, format!("revert failed: {e:#}")).into_response(),
     }
+}
+
+async fn list_snapshots_handler(
+    Path(id): Path<String>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid id").into_response();
+    }
+    match rs.app.list_snapshots(&id).await {
+        Ok(snaps) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "snapshots": snaps })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("list: {e:#}")).into_response(),
+    }
+}
+
+async fn create_snapshot_handler(
+    Path(id): Path<String>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid id").into_response();
+    }
+    match rs.app.create_snapshot(&id).await {
+        Ok(snap) => (StatusCode::OK, axum::Json(snap)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("snapshot: {e:#}")).into_response(),
+    }
+}
+
+async fn restore_snapshot_handler(
+    Path((id, dir)): Path<(String, String)>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&id) || !snap_dir_safe(&dir) {
+        return (StatusCode::BAD_REQUEST, "invalid id or dir").into_response();
+    }
+    match rs.app.restore_snapshot(&id, &dir).await {
+        Ok(()) => (StatusCode::OK, "restored").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("restore: {e:#}")).into_response(),
+    }
+}
+
+async fn snapshot_yaml_handler(
+    Path((id, dir)): Path<(String, String)>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&id) || !snap_dir_safe(&dir) {
+        return (StatusCode::BAD_REQUEST, "invalid id or dir").into_response();
+    }
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.read_snapshot_yaml(&id, &dir).await {
+        Ok(yaml) => Response::builder()
+            .header(header::CONTENT_TYPE, "application/yaml")
+            .body(yaml.into())
+            .unwrap(),
+        Err(e) => (StatusCode::NOT_FOUND, format!("snapshot yaml: {e:#}")).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotAssetQuery {
+    id: String,
+    dir: String,
+    path: String,
+}
+
+async fn snapshot_asset_handler(
+    Query(q): Query<SnapshotAssetQuery>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&q.id) || !snap_dir_safe(&q.dir) {
+        return (StatusCode::BAD_REQUEST, "invalid id or dir").into_response();
+    }
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.read_snapshot_asset(&q.id, &q.dir, &q.path).await {
+        Ok(bytes) => Response::builder()
+            .header(header::CONTENT_TYPE, mime_from_path(&q.path))
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(bytes.into())
+            .unwrap(),
+        Err(e) => (StatusCode::NOT_FOUND, format!("snapshot asset: {e:#}")).into_response(),
+    }
+}
+
+fn snap_dir_safe(d: &str) -> bool {
+    !d.is_empty()
+        && d.len() < 80
+        && d.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[derive(Debug, Deserialize)]

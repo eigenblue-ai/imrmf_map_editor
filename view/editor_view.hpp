@@ -18,6 +18,9 @@
 
 namespace imrmf::map_editor {
 
+void set_yjs_readonly(bool v);
+bool yjs_readonly();
+
 enum class Mode {
   Pan,
   Vertex,
@@ -66,8 +69,6 @@ struct EditorState {
   int align_floors_sel_idx = -1;
   bool align_floors_placing = false;
   std::string align_floors_image;
-  // Frozen on align-mode entry so the fiducial-distance mpp fallback
-  // doesn't cancel xf.scale changes during scroll.
   double align_floors_ref_mpp = 0.0;
   double align_floors_tgt_mpp = 0.0;
 
@@ -86,6 +87,24 @@ struct EditorState {
   bool pending_layer_reorder = false;
 
   int last_drawn_level_idx = -1;
+
+  bool show_fiducials = false;
+  int selected_fiducial_idx = -1;
+
+  struct SnapshotEntry {
+    std::string dir;
+    std::string sha;
+    long long created_at = 0;
+  };
+  std::vector<SnapshotEntry> snapshots;
+  // "" = latest (editable). Any other value = read-only snapshot dir.
+  std::string snapshot_dir;
+  bool snapshot_request_create = false;
+  bool snapshot_request_refresh = false;
+  std::string snapshot_request_load;
+  std::string snapshot_request_unload;
+  std::string snapshot_request_restore;
+  std::string snapshot_status;
 };
 
 struct TopBarHooks {
@@ -104,6 +123,8 @@ public:
             const TopBarHooks &top_bar = {});
 
   void reset_view() { canvas_.view_state().view_initialized = false; }
+
+  void apply_snapshot_dir(const std::string &dir);
 
 private:
   std::string building_id_;
@@ -130,6 +151,7 @@ private:
   void draw_align_floors_canvas(Building &building, EditorState &state);
   void handle_floor_align_input(Building &building, EditorState &state,
                                 bool hovered);
+  void draw_version_strip(EditorState &state);
 };
 
 } // namespace imrmf::map_editor

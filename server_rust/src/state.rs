@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use yrs::{Doc, ReadTxn, Transact};
 
-use crate::storage::{MountConfig, MountInfo, Storage};
+use crate::storage::{MountConfig, MountInfo, SnapshotInfo, Storage};
 use crate::sync;
 use crate::validate::Validator;
 use crate::yaml_bridge;
@@ -170,6 +170,16 @@ impl AppState {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("no storage mounted"))?;
+        if self
+            .mounted_building
+            .read()
+            .await
+            .as_ref()
+            .map(|b| b == building_id)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
         let yaml = storage.read_yaml(building_id).await?;
         self.reseed_doc(&yaml).await?;
         *self.mounted_building.write().await = Some(building_id.to_string());
@@ -408,6 +418,100 @@ impl AppState {
     async fn reseed_doc(&self, yaml: &str) -> Result<()> {
         yaml_bridge::seed_doc(&self.doc, yaml).map(|_| ())
     }
+
+    pub async fn list_snapshots(&self, building_id: &str) -> Result<Vec<SnapshotInfo>> {
+        let storage = self
+            .storage
+            .read()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("no storage mounted"))?;
+        storage.list_snapshots(building_id).await
+    }
+
+    pub async fn restore_snapshot(&self, building_id: &str, dir: &str) -> Result<()> {
+        let storage = self
+            .storage
+            .read()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("no storage mounted"))?;
+        let yaml = storage.read_snapshot_yaml(building_id, dir).await?;
+        for path in collect_asset_paths(&yaml) {
+            match storage.read_snapshot_asset(building_id, dir, &path).await {
+                Ok(bytes) => {
+                    if let Err(e) = storage.write_asset(building_id, &path, bytes).await {
+                        tracing::warn!("restore write_asset {path}: {e:#}");
+                    }
+                }
+                Err(e) => tracing::warn!("restore skip asset {path}: {e:#}"),
+            }
+        }
+        storage.write_yaml(building_id, &yaml).await?;
+        let is_current = self
+            .mounted_building
+            .read()
+            .await
+            .as_ref()
+            .map(|b| b == building_id)
+            .unwrap_or(false);
+        if is_current {
+            let sv_before = self.doc.transact().state_vector();
+            self.reseed_doc(&yaml).await?;
+            let update_bytes = self.doc.transact().encode_state_as_update_v1(&sv_before);
+            if !update_bytes.is_empty() {
+                let _ = self
+                    .broadcast
+                    .send(sync::encode_update_message(&update_bytes));
+            }
+            let mut inner = self.inner.lock().await;
+            inner.last_disk_hash = hash_bytes(yaml.as_bytes());
+            inner.last_valid_yaml = Some(yaml.clone());
+            inner.dirty = false;
+        }
+        Ok(())
+    }
+
+    pub async fn create_snapshot(&self, building_id: &str) -> Result<SnapshotInfo> {
+        self.flush_if_dirty().await.ok();
+        let storage = self
+            .storage
+            .read()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!("no storage mounted"))?;
+        let yaml = {
+            let txn = self.doc.transact();
+            yaml_bridge::serialize_doc(&txn)?
+        };
+        let sha = short_sha(yaml.as_bytes());
+        let created_at = unix_secs_now() as i64;
+        let snap = SnapshotInfo {
+            dir: format!("{created_at}-{sha}"),
+            sha,
+            created_at,
+        };
+        let mut assets = Vec::new();
+        for path in collect_asset_paths(&yaml) {
+            match storage.read_asset(building_id, &path).await {
+                Ok(bytes) => assets.push((path, bytes)),
+                Err(e) => tracing::warn!("snapshot skip asset {path}: {e:#}"),
+            }
+        }
+        storage
+            .create_snapshot(building_id, &snap, &yaml, &assets)
+            .await?;
+        Ok(snap)
+    }
+}
+
+fn short_sha(bytes: &[u8]) -> String {
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    format!("{:07x}", h.finish() & 0x0fff_ffff)
 }
 
 fn unix_secs_now() -> u64 {

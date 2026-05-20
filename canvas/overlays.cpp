@@ -243,8 +243,30 @@ void draw_mouse_coord_hud(const MapCanvas &c, double ref_mpp,
   double eff = ref_mpp > 0.0 ? ref_mpp : 1.0;
   char buf[160];
   std::snprintf(buf, sizeof(buf),
-                "ref-px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)", rx, ry,
+                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)", px, py,
                 rx * eff, -ry * eff);
+  ImVec2 sz = ImGui::CalcTextSize(buf);
+  ImVec2 pos(cp.x + 8.0f, cp.y + cs.y - sz.y - 8.0f);
+  ImDrawList *dl = c.draw_list();
+  dl->AddRectFilled(ImVec2(pos.x - 4, pos.y - 2),
+                    ImVec2(pos.x + sz.x + 4, pos.y + sz.y + 2),
+                    IM_COL32(0, 0, 0, 180), 3.0f);
+  dl->AddText(pos, IM_COL32(220, 220, 220, 255), buf);
+}
+
+void draw_mouse_coord_hud(const MapCanvas &c, const Building &building,
+                          int level_idx) {
+  ImVec2 m = ImGui::GetIO().MousePos;
+  ImVec2 cp = c.canvas_pos();
+  ImVec2 cs = c.canvas_size();
+  if (m.x < cp.x || m.x > cp.x + cs.x || m.y < cp.y || m.y > cp.y + cs.y)
+    return;
+  auto [px, py] = c.screen_to_world(m);
+  auto [rmf_x, rmf_y] = level_px_to_rmf(building, level_idx, px, py);
+  char buf[160];
+  std::snprintf(buf, sizeof(buf),
+                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)", px, py, rmf_x,
+                rmf_y);
   ImVec2 sz = ImGui::CalcTextSize(buf);
   ImVec2 pos(cp.x + 8.0f, cp.y + cs.y - sz.y - 8.0f);
   ImDrawList *dl = c.draw_list();

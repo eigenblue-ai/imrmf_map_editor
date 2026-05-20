@@ -11,6 +11,7 @@
 #include "model/building.hpp"
 #include "model/yaml_io.hpp"
 #include "view/editor_view.hpp"
+#include "yaml-cpp/yaml.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -32,10 +33,13 @@ namespace {
 
 GLFWwindow *g_window = nullptr;
 Building g_building;
+Building g_snapshot_building;
 EditorState g_state;
 std::unique_ptr<EditorView> g_view;
 std::string g_building_id;
 std::string g_server_url;
+std::string g_active_snapshot_dir;
+bool g_snapshots_dirty = true;
 
 enum class ConnPhase {
   BootingConfig, // GET /config in flight (decides whether to show modal)
@@ -283,6 +287,107 @@ EM_JS(void, imrmf_fs_reset_result, (), {
     window.imrmf._fs_result = {code : 'idle', payload : null};
 });
 
+EM_JS(void, imrmf_call_list_snapshots,
+      (const char *server_c, const char *id_c), {
+        if (!window.imrmf) return;
+        window.imrmf._snap_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/snapshots")
+            .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+            .then(d => {
+              window.imrmf._snap_result = {code : 'list', payload : d};
+            })
+            .catch(e => {
+              window.imrmf._snap_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(void, imrmf_call_create_snapshot,
+      (const char *server_c, const char *id_c), {
+        if (!window.imrmf) return;
+        window.imrmf._snap_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/snapshots",
+              {method : "POST"})
+            .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+            .then(d => {
+              window.imrmf._snap_result = {code : 'created', payload : d};
+            })
+            .catch(e => {
+              window.imrmf._snap_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(void, imrmf_call_restore_snapshot,
+      (const char *server_c, const char *id_c, const char *dir_c), {
+        if (!window.imrmf) return;
+        window.imrmf._snap_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        const dir = UTF8ToString(dir_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/snapshots/" +
+              encodeURIComponent(dir) + "/restore",
+              {method : "POST"})
+            .then(r => r.ok ? r.text() : r.text().then(t => Promise.reject(t)))
+            .then(() => {
+              window.imrmf._snap_result = {code : 'restored', payload : dir};
+            })
+            .catch(e => {
+              window.imrmf._snap_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(void, imrmf_call_load_snapshot_yaml,
+      (const char *server_c, const char *id_c, const char *dir_c), {
+        if (!window.imrmf) return;
+        window.imrmf._snap_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        const dir = UTF8ToString(dir_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/snapshots/" +
+              encodeURIComponent(dir) + "/yaml")
+            .then(r => r.ok ? r.text() : r.text().then(t => Promise.reject(t)))
+            .then(t => {
+              window.imrmf._snap_result =
+                  {code : 'yaml', payload : t, payload_dir : dir};
+            })
+            .catch(e => {
+              window.imrmf._snap_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(const char *, imrmf_snap_result_code, (), {
+  if (!window.imrmf || !window.imrmf._snap_result)
+    return stringToNewUTF8('idle');
+  return stringToNewUTF8(window.imrmf._snap_result.code || 'idle');
+});
+EM_JS(const char *, imrmf_snap_result_payload, (), {
+  if (!window.imrmf || !window.imrmf._snap_result)
+    return stringToNewUTF8("");
+  const p = window.imrmf._snap_result.payload;
+  return stringToNewUTF8(
+      p == null ? "" : (typeof p === 'string' ? p : JSON.stringify(p)));
+});
+EM_JS(const char *, imrmf_snap_result_dir, (), {
+  if (!window.imrmf || !window.imrmf._snap_result)
+    return stringToNewUTF8("");
+  return stringToNewUTF8(window.imrmf._snap_result.payload_dir || "");
+});
+EM_JS(void, imrmf_snap_reset_result, (), {
+  if (window.imrmf)
+    window.imrmf._snap_result = {code : 'idle', payload : null};
+});
+
 // clang-format on
 #else // !__EMSCRIPTEN__
 
@@ -291,6 +396,14 @@ void imrmf_yjs_clear_remote_dirty() {}
 const char *imrmf_yjs_snapshot_yaml() { return nullptr; }
 void imrmf_yjs_push_local_yaml(const char *) {}
 int imrmf_yjs_is_synced() { return 0; }
+void imrmf_call_list_snapshots(const char *, const char *) {}
+void imrmf_call_create_snapshot(const char *, const char *) {}
+void imrmf_call_load_snapshot_yaml(const char *, const char *, const char *) {}
+void imrmf_call_restore_snapshot(const char *, const char *, const char *) {}
+const char *imrmf_snap_result_code() { return nullptr; }
+const char *imrmf_snap_result_payload() { return nullptr; }
+const char *imrmf_snap_result_dir() { return nullptr; }
+void imrmf_snap_reset_result() {}
 
 #endif
 
@@ -315,6 +428,14 @@ void mirror_from_yjs() {
   try {
     auto b = imrmf::map_editor::parse_building(body);
     if (!b.levels.empty()) {
+      for (auto &lvl : b.levels) {
+        for (const auto &old : g_building.levels) {
+          if (old.name == lvl.name && old.mpp_snapshot > 0.0) {
+            lvl.mpp_snapshot = old.mpp_snapshot;
+            break;
+          }
+        }
+      }
       g_building = std::move(b);
       g_state.level_idx = std::max(
           0, std::min(g_state.level_idx, (int)g_building.levels.size() - 1));
@@ -360,6 +481,114 @@ void push_to_yjs_if_dirty() {
   imrmf_yjs_push_local_yaml(yaml.c_str());
   s_last_push = now;
   g_state.dirty = false;
+#endif
+}
+
+void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
+  try {
+    g_snapshot_building = imrmf::map_editor::parse_building(yaml);
+  } catch (const std::exception &e) {
+    g_state.snapshot_status = std::string("parse failed: ") + e.what();
+    return;
+  }
+  g_state.snapshot_dir = dir;
+  g_active_snapshot_dir = dir;
+  if (g_view) g_view->apply_snapshot_dir(dir);
+  imrmf::map_editor::set_yjs_readonly(true);
+  g_state.snapshot_status = "viewing " + dir;
+}
+
+void exit_snapshot_mode() {
+  g_state.snapshot_dir.clear();
+  g_active_snapshot_dir.clear();
+  g_snapshot_building = {};
+  if (g_view) g_view->apply_snapshot_dir("");
+  imrmf::map_editor::set_yjs_readonly(false);
+  g_state.snapshot_status.clear();
+}
+
+void issue_snapshot_requests() {
+#ifdef __EMSCRIPTEN__
+  if (g_building_id.empty()) return;
+  if (g_state.snapshot_request_refresh) {
+    g_state.snapshot_request_refresh = false;
+    g_snapshots_dirty = true;
+  }
+  if (g_snapshots_dirty) {
+    g_snapshots_dirty = false;
+    imrmf_call_list_snapshots(g_server_url.c_str(), g_building_id.c_str());
+  }
+  if (g_state.snapshot_request_create) {
+    g_state.snapshot_request_create = false;
+    g_state.snapshot_status = "creating...";
+    imrmf_call_create_snapshot(g_server_url.c_str(), g_building_id.c_str());
+  }
+  if (!g_state.snapshot_request_load.empty()) {
+    std::string dir = g_state.snapshot_request_load;
+    g_state.snapshot_request_load.clear();
+    g_state.snapshot_status = "loading " + dir + "...";
+    imrmf_call_load_snapshot_yaml(g_server_url.c_str(), g_building_id.c_str(),
+                                  dir.c_str());
+  }
+  if (!g_state.snapshot_request_unload.empty()) {
+    g_state.snapshot_request_unload.clear();
+    exit_snapshot_mode();
+  }
+  if (!g_state.snapshot_request_restore.empty()) {
+    std::string dir = g_state.snapshot_request_restore;
+    g_state.snapshot_request_restore.clear();
+    g_state.snapshot_status = "restoring " + dir + "...";
+    imrmf_call_restore_snapshot(g_server_url.c_str(), g_building_id.c_str(),
+                                dir.c_str());
+  }
+#endif
+}
+
+void poll_snapshot_result() {
+#ifdef __EMSCRIPTEN__
+  const char *code_c = imrmf_snap_result_code();
+  if (!code_c) return;
+  std::string code(code_c);
+  std::free((void *)code_c);
+  if (code == "idle" || code == "busy") return;
+
+  const char *payload_c = imrmf_snap_result_payload();
+  std::string payload = payload_c ? payload_c : "";
+  if (payload_c) std::free((void *)payload_c);
+
+  if (code == "list") {
+    g_state.snapshots.clear();
+    try {
+      YAML::Node node = YAML::Load(payload);
+      if (node.IsMap()) {
+        YAML::Node arr = node["snapshots"];
+        if (arr && arr.IsSequence()) {
+          for (auto it : arr) {
+            EditorState::SnapshotEntry e;
+            e.dir = it["dir"].as<std::string>("");
+            e.sha = it["sha"].as<std::string>("");
+            e.created_at = it["created_at"].as<long long>(0);
+            if (!e.dir.empty()) g_state.snapshots.push_back(std::move(e));
+          }
+        }
+      }
+    } catch (...) {
+    }
+  } else if (code == "created") {
+    g_state.snapshot_status = "snapshot created";
+    g_snapshots_dirty = true;
+  } else if (code == "yaml") {
+    const char *dir_c = imrmf_snap_result_dir();
+    std::string dir = dir_c ? dir_c : "";
+    if (dir_c) std::free((void *)dir_c);
+    if (!dir.empty()) enter_snapshot_mode(dir, payload);
+  } else if (code == "restored") {
+    g_state.snapshot_status = "restored from " + payload;
+    exit_snapshot_mode();
+  } else if (code == "err") {
+    g_state.snapshot_status = "error: " + payload;
+  }
+  imrmf_snap_reset_result();
 #endif
 }
 
@@ -973,10 +1202,12 @@ void frame() {
 #ifdef __EMSCRIPTEN__
   poll_async_result();
   poll_fs_result();
+  poll_snapshot_result();
 #endif
 
   if (g_phase == ConnPhase::Connected) {
     mirror_from_yjs();
+    issue_snapshot_requests();
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -988,13 +1219,15 @@ void frame() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
     ImGui::Begin("##imrmf_root", nullptr, wf);
     ImGui::PopStyleVar();
-    if (g_view && !g_building.levels.empty()) {
-      g_view->draw(g_building, g_state, []() {}, build_top_bar_hooks());
+    Building &shown = g_state.snapshot_dir.empty() ? g_building : g_snapshot_building;
+    if (g_view && !shown.levels.empty()) {
+      g_view->draw(shown, g_state, []() {}, build_top_bar_hooks());
     } else {
       ImGui::Text("Waiting for initial sync...");
     }
     ImGui::End();
-    push_to_yjs_if_dirty();
+    if (g_state.snapshot_dir.empty())
+      push_to_yjs_if_dirty();
   } else if (g_phase == ConnPhase::Modal || g_phase == ConnPhase::Error) {
     draw_connection_modal();
   } else if (g_phase == ConnPhase::Mounted) {

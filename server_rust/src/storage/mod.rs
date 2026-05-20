@@ -55,6 +55,49 @@ pub trait Storage: Send + Sync {
     /// Human-readable summary, for GET /mount/status. Must not include
     /// credentials.
     fn describe(&self) -> MountInfo;
+
+    async fn list_snapshots(&self, building_id: &str) -> Result<Vec<SnapshotInfo>>;
+
+    async fn create_snapshot(
+        &self,
+        building_id: &str,
+        snap: &SnapshotInfo,
+        yaml: &str,
+        assets: &[(String, Bytes)],
+    ) -> Result<()>;
+
+    async fn read_snapshot_yaml(&self, building_id: &str, dir: &str) -> Result<String>;
+
+    async fn read_snapshot_asset(
+        &self,
+        building_id: &str,
+        dir: &str,
+        path: &str,
+    ) -> Result<Bytes>;
+}
+
+// dir is the on-disk/S3 folder ("<unix_secs>-<short_sha>"). Parsed back via
+// SnapshotInfo::parse_dir; nothing else encodes the timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotInfo {
+    pub dir: String,
+    pub sha: String,
+    pub created_at: i64,
+}
+
+impl SnapshotInfo {
+    pub fn parse_dir(name: &str) -> Option<Self> {
+        let (ts, sha) = name.split_once('-')?;
+        let created_at: i64 = ts.parse().ok()?;
+        if sha.is_empty() {
+            return None;
+        }
+        Some(SnapshotInfo {
+            dir: name.to_string(),
+            sha: sha.to_string(),
+            created_at,
+        })
+    }
 }
 
 /// Serialized form of an active mount, returned by GET /mount/status. Fields
