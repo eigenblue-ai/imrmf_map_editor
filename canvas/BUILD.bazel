@@ -3,6 +3,16 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "viewport",
+    srcs = ["viewport.cpp"],
+    hdrs = ["viewport.hpp"],
+    strip_include_prefix = "/",
+    deps = [
+        "@imgui_docking//:imgui",
+    ],
+)
+
+cc_library(
     name = "canvas",
     srcs = [
         "canvas.cpp",
@@ -18,6 +28,7 @@ cc_library(
     }),
     strip_include_prefix = "/",
     deps = [
+        ":viewport",
         "//model",
         "@imgui_docking//:imgui",
     ],

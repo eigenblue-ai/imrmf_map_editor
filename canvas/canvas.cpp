@@ -152,16 +152,11 @@ MapCanvas::MapCanvas(std::string asset_id, TextureProvider *provider)
     : asset_id_(std::move(asset_id)), provider_(provider) {}
 
 ImVec2 MapCanvas::world_to_screen(double wx, double wy) const {
-  return ImVec2(
-      canvas_center_.x + (float)wx * view_state_.scale + view_state_.offset_x,
-      canvas_center_.y + (float)wy * view_state_.scale + view_state_.offset_y);
+  return view_world_to_screen(view_state_, canvas_center_, wx, wy);
 }
 
 std::pair<double, double> MapCanvas::screen_to_world(ImVec2 sp) const {
-  return {
-      ((sp.x - canvas_center_.x - view_state_.offset_x) / view_state_.scale),
-      ((sp.y - canvas_center_.y - view_state_.offset_y) / view_state_.scale),
-  };
+  return view_screen_to_world(view_state_, canvas_center_, sp);
 }
 
 void MapCanvas::draw(const Building &building, int level_idx,
@@ -327,27 +322,8 @@ void MapCanvas::draw(const Building &building, int level_idx,
 }
 
 void MapCanvas::handle_pan_zoom(bool hovered) {
-  ImGuiIO &io = ImGui::GetIO();
-  if (hovered && io.MouseWheel != 0.0f) {
-    auto [wxb, wyb] = screen_to_world(io.MousePos);
-    float factor = 1.0f + io.MouseWheel * 0.1f;
-    view_state_.scale =
-        std::max(0.05f, std::min(view_state_.scale * factor, 50.0f));
-    auto [wxa, wya] = screen_to_world(io.MousePos);
-    view_state_.offset_x += (float)(wxa - wxb) * view_state_.scale;
-    view_state_.offset_y += (float)(wya - wyb) * view_state_.scale;
-  }
-  static bool middle_panning = false;
-  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
-    middle_panning = true;
-  if (middle_panning) {
-    if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-      view_state_.offset_x += io.MouseDelta.x;
-      view_state_.offset_y += io.MouseDelta.y;
-    } else {
-      middle_panning = false;
-    }
-  }
+  ::imrmf::map_editor::canvas::handle_pan_zoom(view_state_, canvas_center_,
+                                               hovered);
 }
 
 } // namespace imrmf::map_editor::canvas
