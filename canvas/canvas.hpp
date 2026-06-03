@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "canvas/viewport.hpp"
 #include "imgui/imgui.h"
 #include "model/building.hpp"
 
@@ -45,13 +46,6 @@ protected:
                             double tint_g, double tint_b) = 0;
 
   std::unordered_map<std::string, LayerTexture> textures_;
-};
-
-struct ViewState {
-  float scale = 1.0f;
-  float offset_x = 0.0f;
-  float offset_y = 0.0f;
-  bool view_initialized = false;
 };
 
 struct FloorplanSession {
