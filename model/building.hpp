@@ -102,6 +102,7 @@ struct Level {
 struct Building {
   std::string name;
   std::string coordinate_system;
+  std::string reference_level_name;
   std::vector<Level> levels;
   YAML::Node passthrough; // graphs, lifts, crowd_sim, ...
 };

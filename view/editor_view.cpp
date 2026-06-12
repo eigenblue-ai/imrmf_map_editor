@@ -158,6 +158,7 @@ void mevjs_layer_reorder(const char *level, const char *names_json);
 void mevjs_fiducial_add(const char *level, const char *yaml);
 void mevjs_fiducial_replace(const char *level, int idx, const char *yaml);
 void mevjs_fiducial_delete(const char *level, int idx);
+void mevjs_set_reference_level(const char *name);
 }
 #endif
 
@@ -269,6 +270,14 @@ void yjs_op_fiducial_delete(const std::string &level, int idx) {
 #else
   (void)level;
   (void)idx;
+#endif
+}
+void yjs_op_set_reference_level(const std::string &name) {
+  if (g_readonly) return;
+#ifdef __EMSCRIPTEN__
+  mevjs_set_reference_level(name.c_str());
+#else
+  (void)name;
 #endif
 }
 
@@ -552,6 +561,10 @@ EM_JS(void, mevjs_fiducial_delete, (const char *level, int idx), {
   if (window.imrmf.yjs)
     window.imrmf.yjs.fiducialDelete(UTF8ToString(level), idx);
 });
+EM_JS(void, mevjs_set_reference_level, (const char *name), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.setReferenceLevelName(UTF8ToString(name));
+});
 
 #endif // __EMSCRIPTEN__
 
@@ -648,6 +661,8 @@ void EditorView::draw(Building &building, EditorState &state,
   if (state.align_floors_mode) {
     draw_align_floors_panel(building, state);
   } else {
+    draw_building_panel(building, state);
+    ImGui::Separator();
     ImGui::TextDisabled("View");
     ImGui::Checkbox("Show fiducials", &state.show_fiducials);
     if (!state.show_fiducials) state.selected_fiducial_idx = -1;
@@ -1622,6 +1637,29 @@ void EditorView::draw_add_layer_section(Building &building,
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+  }
+}
+
+void EditorView::draw_building_panel(Building &building, EditorState &state) {
+  (void)state;
+  ImGui::TextDisabled("Building");
+  const std::string &cur = building.reference_level_name;
+  const char *preview = !cur.empty()        ? cur.c_str()
+                        : building.levels.empty() ? ""
+                                            : building.levels.front().name.c_str();
+  ImGui::Text("Reference level");
+  ImGui::SetNextItemWidth(-1);
+  if (ImGui::BeginCombo("##reference_level", preview)) {
+    for (const Level &lvl : building.levels) {
+      bool sel = (lvl.name == cur);
+      if (ImGui::Selectable(lvl.name.c_str(), sel) && lvl.name != cur) {
+        building.reference_level_name = lvl.name;
+        yjs_op_set_reference_level(lvl.name);
+      }
+      if (sel)
+        ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
   }
 }
 
