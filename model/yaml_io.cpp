@@ -321,7 +321,8 @@ YAML::Node level_to_yaml(const Level &lvl) {
   return n;
 }
 
-const char *kKnownBuildingKeys[] = {"name", "coordinate_system", "levels"};
+const char *kKnownBuildingKeys[] = {"name", "coordinate_system",
+                                    "reference_level_name", "levels"};
 
 bool is_known_building_key(const std::string &k) {
   for (const char *known : kKnownBuildingKeys)
@@ -347,6 +348,8 @@ Building parse_building(const std::string &yaml_text) {
     b.name = root["name"].as<std::string>("");
   if (root["coordinate_system"])
     b.coordinate_system = root["coordinate_system"].as<std::string>("");
+  if (root["reference_level_name"])
+    b.reference_level_name = root["reference_level_name"].as<std::string>("");
 
   if (root["levels"] && root["levels"].IsMap()) {
     for (auto it = root["levels"].begin(); it != root["levels"].end(); ++it) {
@@ -398,6 +401,8 @@ std::string serialize_building(const Building &b) {
   }
   if (!b.coordinate_system.empty())
     root["coordinate_system"] = b.coordinate_system;
+  if (!b.reference_level_name.empty())
+    root["reference_level_name"] = b.reference_level_name;
   root["name"] = b.name;
   YAML::Node levels(YAML::NodeType::Map);
   for (const Level &lvl : b.levels)

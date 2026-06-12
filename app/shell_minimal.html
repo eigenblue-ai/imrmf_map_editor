@@ -255,6 +255,7 @@
           fiducialAdd: () => {},
           fiducialReplace: () => {},
           fiducialDelete: () => {},
+          setReferenceLevelName: () => {},
           undo: () => {},
           redo: () => {},
           canUndo: () => false,
@@ -525,6 +526,13 @@
           }, "local");
         }
 
+        function setReferenceLevelName(name) {
+          doc.transact(() => {
+            if (name) buildingMap.set("reference_level_name", name);
+            else buildingMap.delete("reference_level_name");
+          }, "local");
+        }
+
         const undoManager = new Y.UndoManager(buildingMap, {
           trackedOrigins: new Set(["local"]),
         });
@@ -548,6 +556,7 @@
           fiducialAdd,
           fiducialReplace,
           fiducialDelete,
+          setReferenceLevelName,
           undo: () => undoManager.undo(),
           redo: () => undoManager.redo(),
           canUndo: () => undoManager.canUndo(),

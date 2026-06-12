@@ -193,5 +193,19 @@ crate.spec(
     package = "crc-fast",
     version = "=1.9.0",
 )
+
+# time 0.3.48 added a parsing impl that breaks trait coherence with
+# aws-smithy-types' blanket From impl under rustc 1.88 (E0119). from_specs
+# re-resolves past the committed lock (0.3.47) on fresh CI; pin the last good one.
+crate.spec(
+    package = "time",
+    version = "=0.3.47",
+)
+# aws-runtime fails type inference against aws-smithy-types 1.5.0 (E0282); pin
+# the last known-good 1.4.x from the committed lock.
+crate.spec(
+    package = "aws-smithy-types",
+    version = "=1.4.8",
+)
 crate.from_specs()
 use_repo(crate, "crates")

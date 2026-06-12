@@ -139,6 +139,7 @@ private:
                     const std::function<void()> &save_callback,
                     const TopBarHooks &top_bar);
   void draw_canvas(Building &building, EditorState &state);
+  void draw_building_panel(Building &building, EditorState &state);
   void draw_add_layer_section(Building &building, EditorState &state);
   void draw_layer_config_panel(Building &building, EditorState &state);
   void draw_attribute_panel(Building &building, EditorState &state);
