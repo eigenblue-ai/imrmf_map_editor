@@ -67,6 +67,34 @@ struct Lane {
   std::map<std::string, ParamValue> params;
 };
 
+// Wall/Door/Measurement share the lane shape: [start_idx, end_idx, {params}].
+// Kept as separate types so the editor can tell them apart.
+struct Wall {
+  int start_idx = 0;
+  int end_idx = 0;
+  std::map<std::string, ParamValue> params;
+};
+
+struct Door {
+  int start_idx = 0;
+  int end_idx = 0;
+  std::map<std::string, ParamValue> params;
+};
+
+struct Measurement {
+  int start_idx = 0;
+  int end_idx = 0;
+  std::map<std::string, ParamValue> params;
+};
+
+// closed loop of indices into Level::vertices, with inner loops cut out as holes
+struct Floor {
+  std::vector<int> vertices;
+  std::vector<std::vector<int>> holes;
+  std::map<std::string, ParamValue> params;
+  YAML::Node passthrough; // unmodeled keys
+};
+
 // YAML: [x_px, y_px, name].
 struct Fiducial {
   double x = 0.0;
@@ -93,9 +121,13 @@ struct Level {
   std::string drawing_filename;
   std::vector<Vertex> vertices;
   std::vector<Lane> lanes;
+  std::vector<Wall> walls;
+  std::vector<Door> doors;
+  std::vector<Measurement> measurements;
+  std::vector<Floor> floors;
   std::vector<Fiducial> fiducials;
   std::vector<Layer> layers;
-  YAML::Node passthrough; // walls, fiducials, measurements, doors, ...
+  YAML::Node passthrough; // models, flattened_*, and any other unmodeled keys
   double mpp_snapshot = 0.0;
 };
 

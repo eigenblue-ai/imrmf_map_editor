@@ -451,12 +451,24 @@ void mirror_from_yjs() {
               g_state.selected_lanes.begin(), g_state.selected_lanes.end(),
               [&](int i) { return i < 0 || i >= (int)cur.lanes.size(); }),
           g_state.selected_lanes.end());
+      auto clamp_sel = [](std::vector<int> &sel, int n) {
+        sel.erase(std::remove_if(sel.begin(), sel.end(),
+                                 [&](int i) { return i < 0 || i >= n; }),
+                  sel.end());
+      };
+      clamp_sel(g_state.selected_walls, (int)cur.walls.size());
+      clamp_sel(g_state.selected_doors, (int)cur.doors.size());
+      clamp_sel(g_state.selected_measurements, (int)cur.measurements.size());
+      if (g_state.selected_floor >= (int)cur.floors.size())
+        g_state.selected_floor = -1;
       if (g_state.selected_layer >= (int)cur.layers.size())
         g_state.selected_layer = -1;
       if (g_state.align_layer_idx >= (int)cur.layers.size())
         g_state.align_layer_idx = -1;
       if (g_state.pending_lane_start >= (int)cur.vertices.size())
         g_state.pending_lane_start = -1;
+      if (g_state.pending_edge_start >= (int)cur.vertices.size())
+        g_state.pending_edge_start = -1;
       g_state.dirty = false;
     }
   } catch (const std::exception &e) {

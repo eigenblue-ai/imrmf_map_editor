@@ -20,6 +20,10 @@ std::string serialize_building(const Building &b);
 // Single-element emitters for fine-grained CRDT ops.
 std::string serialize_vertex(const Vertex &v);
 std::string serialize_lane(const Lane &l);
+std::string serialize_wall(const Wall &w);
+std::string serialize_door(const Door &d);
+std::string serialize_measurement(const Measurement &m);
+std::string serialize_floor(const Floor &f);
 std::string serialize_layer(const Layer &l);
 std::string serialize_fiducial(const Fiducial &f);
 

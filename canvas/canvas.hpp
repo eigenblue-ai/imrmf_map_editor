@@ -70,7 +70,11 @@ class MapCanvas;
 struct DrawOptions {
   bool draw_floorplan = true;
   bool draw_layers = true;
+  bool draw_floors = true;
+  bool draw_walls = true;
   bool draw_lanes = true;
+  bool draw_doors = true;
+  bool draw_measurements = true;
   bool draw_vertices = true;
   bool show_vertex_names = true;
   const std::unordered_map<std::string, FloorplanSession> *floorplan_sessions =

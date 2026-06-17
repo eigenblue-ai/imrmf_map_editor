@@ -24,7 +24,10 @@ flushes `building.yaml` to disk or S3.
 | Key | Action |
 |---|---|
 | `S` / `V` / `L` | Select / Vertex / Lane mode |
-| `Esc` | Break the lane chain |
+| `W` / `D` / `M` | Wall / Door / Measurement mode |
+| `F` / `H` | Floor / Hole polygon mode |
+| `Enter` | Close the floor/hole polygon |
+| `Esc` | Break the lane/wall chain or cancel a polygon |
 | `Delete` | Delete current selection |
 | `Ctrl/Cmd+S` | Force flush |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
@@ -83,56 +86,56 @@ CI builds and publishes this image to `ghcr.io/eigenblue-ai/imrmf_map_editor`
 
 ## Feature gaps vs upstream traffic-editor
 
-Comparison against [`osrf/ros2multirobotbook/traffic-editor`](https://osrf.github.io/ros2multirobotbook/traffic-editor.html). `partial` = present in the data model but not surfaced in the UI.
+Comparison against [`osrf/ros2multirobotbook/traffic-editor`](https://osrf.github.io/ros2multirobotbook/traffic-editor.html). Key: ✅ done · 🟡 partial · ❌ missing · — not applicable upstream.
 
 | Area | Feature | traffic-editor | imrmf_map_editor | Notes |
 |---|---|---|---|---|
-| Geometry tools | Walls (`w`) | ✓ | ✗ | round-tripped in `Level::passthrough` |
-| | Floor polygons | ✓ | ✗ | passthrough |
-| | Hole polygons | ✓ | ✗ | passthrough |
-| | Edit polygon tool | ✓ | ✗ | — |
-| | Doors (hinged/sliding/etc.) | ✓ | ✗ | passthrough |
-| | Lifts (multi-level, cabin, doors) | ✓ | ✗ | `Building::passthrough` |
-| | Fiducials | ✓ | ✗ | no inter-level auto-transform |
-| | Measurements (scale calibration) | ✓ | ✗ | mpp only via layer scale |
-| | Model / asset placement | ✓ | ✗ | no thumbnail library |
-| Edit ops | Move tool (`m`) | ✓ | partial | only via Vertex-mode drag |
-| | Rotate tool (`r`) | ✓ | ✗ | — |
-| | Toggle bidirectional (`b`) | ✓ | ✗ | edit via attribute panel only |
-| | Grid snap | ✓ | partial | shift→H/V/45° only, no fixed grid |
-| | Marquee select lanes | — | ✓ | |
-| | Multi-vertex align H/V | — | ✓ | |
-| Vertex params | Standard 11 RMF keys | ✓ | ✓ | match |
-| | `mutex`, `merge_radius` | — | ✓ | extras |
-| | `Vertex.z` (elevation) | ✓ | partial | in struct, not in UI |
-| Lane params | bidirectional, orientation, graph_idx, speed_limit, demo_mock_*, mutex | ✓ | ✓ | match |
-| | Direction arrows | ✓ | ✓ | match |
-| Level metadata | `elevation` editor | ✓ | ✗ | in struct, not editable |
-| | `drawing_filename` direct edit | ✓ | partial | only via Layers flow |
-| | Add / rename / reorder levels | ✓ | ✗ | dropdown selector only |
-| Building metadata | `name` editor | ✓ | ✗ | in struct, not editable |
-| | `coordinate_system` editor | ✓ | ✗ | inherits loaded value |
-| Layer | scale / yaw / translation | ✓ | ✓ | match |
-| | RGB color | ✓ | ✓ | match |
-| | Alpha (`color_a`) | ✓ | ✓ | match |
-| | `visible` toggle | ✓ | ✓ | match |
-| Sidebar | Levels panel | ✓ | ✗ | — |
-| | Layers panel | ✓ | ✓ | match (overlay) |
-| | Lifts panel | ✓ | ✗ | — |
-| | Traffic tab + per-graph visibility (0..8) | ✓ | ✗ | all lanes always drawn |
-| | Live cursor coords | ✓ | ✗ | — |
-| | Graph color legend | ✓ | ✗ | — |
-| Crowd sim | `human_goal_set_name` on vertex | ✓ | ✓ | match |
-| | `crowd_sim` block editor (agent_groups, profiles, transitions) | ✓ | ✗ | `Building::passthrough` |
-| Workflow | `building_map_generator` integration | ✓ | partial | server validates only, no UI button |
-| | Nav-graph (`*.nav.yaml`) export | ✓ | ✗ | — |
-| | 3D / wall-mesh preview / export | ✓ | ✗ | — |
-| | Scenario / task authoring | ✓ | ✗ | — |
-| Sync / storage | Local filesystem | ✓ | ✓ | match |
-| | S3 backend | — | ✓ | |
-| | Multi-user Yjs CRDT | — | ✓ | |
-| | Browser / wasm UI | — | ✓ | |
-| | Auto-mount / auto-building | — | ✓ | |
+| Geometry tools | Walls (`w`) | ✅ | ✅ | draw chain, select, edit textures, delete |
+| | Floor polygons | ✅ | ✅ | click a loop to define; fill + outline; param edit |
+| | Hole polygons | ✅ | ✅ | added to the selected floor; outline only (fill doesn't subtract yet) |
+| | Edit polygon tool | ✅ | 🟡 | loop vertices move with the shared vertex drag; no add/remove-vertex-in-loop yet |
+| | Doors (hinged/sliding/etc.) | ✅ | ✅ | type + motion params, swing-arc glyph |
+| | Lifts (multi-level, cabin, doors) | ✅ | ❌ | `Building::passthrough` |
+| | Fiducials | ✅ | ❌ | no inter-level auto-transform |
+| | Measurements (scale calibration) | ✅ | ✅ | create + edit `distance`; feeds level scale |
+| | Model / asset placement | ✅ | ❌ | no thumbnail library |
+| Edit ops | Move tool (`m`) | ✅ | 🟡 | only via Vertex-mode drag |
+| | Rotate tool (`r`) | ✅ | ❌ | — |
+| | Toggle bidirectional (`b`) | ✅ | ❌ | edit via attribute panel only |
+| | Grid snap | ✅ | 🟡 | shift→H/V/45° only, no fixed grid |
+| | Marquee select lanes | — | ✅ | |
+| | Multi-vertex align H/V | — | ✅ | |
+| Vertex params | Standard 11 RMF keys | ✅ | ✅ | match |
+| | `mutex`, `merge_radius` | — | ✅ | extras |
+| | `Vertex.z` (elevation) | ✅ | 🟡 | in struct, not in UI |
+| Lane params | bidirectional, orientation, graph_idx, speed_limit, demo_mock_*, mutex | ✅ | ✅ | match |
+| | Direction arrows | ✅ | ✅ | match |
+| Level metadata | `elevation` editor | ✅ | ❌ | in struct, not editable |
+| | `drawing_filename` direct edit | ✅ | 🟡 | only via Layers flow |
+| | Add / rename / reorder levels | ✅ | ❌ | dropdown selector only |
+| Building metadata | `name` editor | ✅ | ❌ | in struct, not editable |
+| | `coordinate_system` editor | ✅ | ❌ | inherits loaded value |
+| Layer | scale / yaw / translation | ✅ | ✅ | match |
+| | RGB color | ✅ | ✅ | match |
+| | Alpha (`color_a`) | ✅ | ✅ | match |
+| | `visible` toggle | ✅ | ✅ | match |
+| Sidebar | Levels panel | ✅ | ❌ | — |
+| | Layers panel | ✅ | ✅ | match (overlay) |
+| | Lifts panel | ✅ | ❌ | — |
+| | Traffic tab + per-graph visibility (0..8) | ✅ | ❌ | all lanes always drawn |
+| | Live cursor coords | ✅ | ❌ | — |
+| | Graph color legend | ✅ | ❌ | — |
+| Crowd sim | `human_goal_set_name` on vertex | ✅ | ✅ | match |
+| | `crowd_sim` block editor (agent_groups, profiles, transitions) | ✅ | ❌ | `Building::passthrough` |
+| Workflow | `building_map_generator` integration | ✅ | 🟡 | server validates only, no UI button |
+| | Nav-graph (`*.nav.yaml`) export | ✅ | ❌ | — |
+| | 3D / wall-mesh preview / export | ✅ | ❌ | — |
+| | Scenario / task authoring | ✅ | ❌ | — |
+| Sync / storage | Local filesystem | ✅ | ✅ | match |
+| | S3 backend | — | ✅ | |
+| | Multi-user Yjs CRDT | — | ✅ | |
+| | Browser / wasm UI | — | ✅ | |
+| | Auto-mount / auto-building | — | ✅ | |
 
 ## License
 

@@ -124,20 +124,116 @@ YAML::Node vertex_to_yaml(const Vertex &v) {
   return n;
 }
 
-Lane lane_from_yaml(const YAML::Node &node) {
+// Walls, doors, measurements and lanes are all `[start, end, {params}]`.
+template <typename Edge> Edge edge_from_yaml(const YAML::Node &node) {
   if (!node.IsSequence() || node.size() < 2) {
     throw YamlParseError(
-        "lane node must be a sequence with at least 2 entries");
+        "edge node must be a sequence with at least 2 entries");
   }
-  Lane l;
-  l.start_idx = node[0].as<int>();
-  l.end_idx = node[1].as<int>();
+  Edge e;
+  e.start_idx = node[0].as<int>();
+  e.end_idx = node[1].as<int>();
   if (node.size() >= 3 && node[2].IsMap()) {
     for (auto it = node[2].begin(); it != node[2].end(); ++it) {
-      l.params[it->first.as<std::string>()] = param_from_yaml(it->second);
+      e.params[it->first.as<std::string>()] = param_from_yaml(it->second);
     }
   }
-  return l;
+  return e;
+}
+
+template <typename Edge> YAML::Node edge_to_yaml(const Edge &e) {
+  YAML::Node n(YAML::NodeType::Sequence);
+  n.SetStyle(YAML::EmitterStyle::Flow);
+  n.push_back(e.start_idx);
+  n.push_back(e.end_idx);
+  YAML::Node params(YAML::NodeType::Map);
+  for (const auto &[k, val] : e.params) {
+    params[k] = param_to_yaml(val);
+  }
+  n.push_back(params);
+  return n;
+}
+
+Lane lane_from_yaml(const YAML::Node &node) { return edge_from_yaml<Lane>(node); }
+
+// only model holes when it's a list of int loops, otherwise leave it in
+// passthrough untouched
+bool holes_are_typed(const YAML::Node &node) {
+  if (!node.IsSequence())
+    return false;
+  for (const auto &loop : node) {
+    if (!loop.IsSequence())
+      return false;
+    for (const auto &v : loop)
+      if (!v.IsScalar())
+        return false;
+  }
+  return true;
+}
+
+Floor floor_from_yaml(const YAML::Node &node) {
+  Floor f;
+  if (!node.IsMap())
+    return f;
+  if (node["vertices"] && node["vertices"].IsSequence()) {
+    for (const auto &v : node["vertices"])
+      f.vertices.push_back(v.as<int>(0));
+  }
+  if (node["parameters"] && node["parameters"].IsMap()) {
+    for (auto it = node["parameters"].begin(); it != node["parameters"].end();
+         ++it) {
+      f.params[it->first.as<std::string>()] = param_from_yaml(it->second);
+    }
+  }
+  bool holes_typed = node["holes"] && holes_are_typed(node["holes"]);
+  if (holes_typed) {
+    for (const auto &loop : node["holes"]) {
+      std::vector<int> h;
+      for (const auto &v : loop)
+        h.push_back(v.as<int>(0));
+      f.holes.push_back(std::move(h));
+    }
+  }
+  f.passthrough = YAML::Node(YAML::NodeType::Map);
+  for (auto it = node.begin(); it != node.end(); ++it) {
+    const std::string key = it->first.as<std::string>();
+    if (key == "vertices" || key == "parameters" ||
+        (key == "holes" && holes_typed))
+      continue;
+    f.passthrough[key] = it->second;
+  }
+  return f;
+}
+
+YAML::Node floor_to_yaml(const Floor &f) {
+  YAML::Node n(YAML::NodeType::Map);
+  // Splice unknowns first so known keys win on overlap.
+  if (f.passthrough && f.passthrough.IsMap()) {
+    for (auto it = f.passthrough.begin(); it != f.passthrough.end(); ++it) {
+      n[it->first.as<std::string>()] = it->second;
+    }
+  }
+  YAML::Node params(YAML::NodeType::Map);
+  for (const auto &[k, val] : f.params)
+    params[k] = param_to_yaml(val);
+  n["parameters"] = params;
+  YAML::Node verts(YAML::NodeType::Sequence);
+  verts.SetStyle(YAML::EmitterStyle::Flow);
+  for (int v : f.vertices)
+    verts.push_back(v);
+  n["vertices"] = verts;
+  if (!f.holes.empty()) {
+    YAML::Node holes(YAML::NodeType::Sequence);
+    for (const auto &loop : f.holes) {
+      YAML::Node h(YAML::NodeType::Sequence);
+      h.SetStyle(YAML::EmitterStyle::Flow);
+      for (int v : loop)
+        h.push_back(v);
+      holes.push_back(h);
+    }
+    n["holes"] = holes;
+  }
+  return n;
 }
 
 Fiducial fiducial_from_yaml(const YAML::Node &node) {
@@ -159,18 +255,7 @@ YAML::Node fiducial_to_yaml(const Fiducial &f) {
   return n;
 }
 
-YAML::Node lane_to_yaml(const Lane &l) {
-  YAML::Node n(YAML::NodeType::Sequence);
-  n.SetStyle(YAML::EmitterStyle::Flow);
-  n.push_back(l.start_idx);
-  n.push_back(l.end_idx);
-  YAML::Node params(YAML::NodeType::Map);
-  for (const auto &[k, val] : l.params) {
-    params[k] = param_to_yaml(val);
-  }
-  n.push_back(params);
-  return n;
-}
+YAML::Node lane_to_yaml(const Lane &l) { return edge_to_yaml<Lane>(l); }
 
 Layer layer_from_yaml(const std::string &name, const YAML::Node &node) {
   Layer l;
@@ -238,8 +323,10 @@ YAML::Node layer_to_yaml(const Layer &l) {
 }
 
 // Known top-level level keys we model directly. Everything else is passthrough.
-const char *kKnownLevelKeys[] = {"vertices", "lanes", "fiducials",
-                                 "elevation", "drawing", "layers"};
+const char *kKnownLevelKeys[] = {"vertices",     "lanes",  "walls",
+                                 "doors",        "floors", "measurements",
+                                 "fiducials",    "elevation",
+                                 "drawing",      "layers"};
 
 bool is_known_level_key(const std::string &k) {
   for (const char *known : kKnownLevelKeys)
@@ -263,6 +350,22 @@ Level level_from_yaml(const std::string &name, const YAML::Node &node) {
   if (node["lanes"]) {
     for (const auto &l : node["lanes"])
       lvl.lanes.push_back(lane_from_yaml(l));
+  }
+  if (node["walls"]) {
+    for (const auto &w : node["walls"])
+      lvl.walls.push_back(edge_from_yaml<Wall>(w));
+  }
+  if (node["doors"]) {
+    for (const auto &d : node["doors"])
+      lvl.doors.push_back(edge_from_yaml<Door>(d));
+  }
+  if (node["measurements"]) {
+    for (const auto &m : node["measurements"])
+      lvl.measurements.push_back(edge_from_yaml<Measurement>(m));
+  }
+  if (node["floors"] && node["floors"].IsSequence()) {
+    for (const auto &f : node["floors"])
+      lvl.floors.push_back(floor_from_yaml(f));
   }
   if (node["fiducials"] && node["fiducials"].IsSequence()) {
     for (const auto &f : node["fiducials"])
@@ -306,6 +409,30 @@ YAML::Node level_to_yaml(const Level &lvl) {
   for (const auto &l : lvl.lanes)
     lanes.push_back(lane_to_yaml(l));
   n["lanes"] = lanes;
+  if (!lvl.walls.empty()) {
+    YAML::Node walls(YAML::NodeType::Sequence);
+    for (const auto &w : lvl.walls)
+      walls.push_back(edge_to_yaml<Wall>(w));
+    n["walls"] = walls;
+  }
+  if (!lvl.doors.empty()) {
+    YAML::Node doors(YAML::NodeType::Sequence);
+    for (const auto &d : lvl.doors)
+      doors.push_back(edge_to_yaml<Door>(d));
+    n["doors"] = doors;
+  }
+  if (!lvl.measurements.empty()) {
+    YAML::Node meas(YAML::NodeType::Sequence);
+    for (const auto &m : lvl.measurements)
+      meas.push_back(edge_to_yaml<Measurement>(m));
+    n["measurements"] = meas;
+  }
+  if (!lvl.floors.empty()) {
+    YAML::Node floors(YAML::NodeType::Sequence);
+    for (const auto &f : lvl.floors)
+      floors.push_back(floor_to_yaml(f));
+    n["floors"] = floors;
+  }
   if (!lvl.fiducials.empty()) {
     YAML::Node fids(YAML::NodeType::Sequence);
     for (const auto &f : lvl.fiducials)
@@ -377,6 +504,30 @@ std::string serialize_vertex(const Vertex &v) {
 std::string serialize_lane(const Lane &l) {
   YAML::Emitter emitter;
   emitter << lane_to_yaml(l);
+  return std::string(emitter.c_str() ? emitter.c_str() : "");
+}
+
+std::string serialize_wall(const Wall &w) {
+  YAML::Emitter emitter;
+  emitter << edge_to_yaml<Wall>(w);
+  return std::string(emitter.c_str() ? emitter.c_str() : "");
+}
+
+std::string serialize_door(const Door &d) {
+  YAML::Emitter emitter;
+  emitter << edge_to_yaml<Door>(d);
+  return std::string(emitter.c_str() ? emitter.c_str() : "");
+}
+
+std::string serialize_measurement(const Measurement &m) {
+  YAML::Emitter emitter;
+  emitter << edge_to_yaml<Measurement>(m);
+  return std::string(emitter.c_str() ? emitter.c_str() : "");
+}
+
+std::string serialize_floor(const Floor &f) {
+  YAML::Emitter emitter;
+  emitter << floor_to_yaml(f);
   return std::string(emitter.c_str() ? emitter.c_str() : "");
 }
 

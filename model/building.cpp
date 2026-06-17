@@ -13,25 +13,20 @@ namespace imrmf::map_editor {
 namespace {
 
 double direct_mpp(const Level &level) {
-  if (!level.passthrough || !level.passthrough.IsMap())
-    return 0.0;
-  YAML::Node meas = level.passthrough["measurements"];
-  if (!meas || !meas.IsSequence() || meas.size() == 0)
-    return 0.0;
   double sum = 0.0;
   int count = 0;
-  for (const auto &m : meas) {
-    if (!m.IsSequence() || m.size() < 3)
-      continue;
-    int v0 = m[0].as<int>(-1);
-    int v1 = m[1].as<int>(-1);
+  for (const Measurement &m : level.measurements) {
+    int v0 = m.start_idx;
+    int v1 = m.end_idx;
     if (v0 < 0 || v1 < 0 || v0 >= (int)level.vertices.size() ||
         v1 >= (int)level.vertices.size())
       continue;
-    YAML::Node dist = m[2]["distance"];
-    if (!dist || !dist.IsSequence() || dist.size() < 2)
+    auto it = m.params.find("distance");
+    if (it == m.params.end())
       continue;
-    double d_m = dist[1].as<double>(0.0);
+    double d_m = it->second.type == ParamType::INT
+                     ? (double)it->second.i
+                     : it->second.d;
     if (d_m <= 0.0)
       continue;
     double dx = level.vertices[v0].x - level.vertices[v1].x;
@@ -138,23 +133,63 @@ std::vector<int> lanes_referencing_vertex(const Level &level, int vertex_idx) {
   return out;
 }
 
-void delete_vertex(Level &level, int vertex_idx) {
-  if (vertex_idx < 0 || vertex_idx >= (int)level.vertices.size())
-    return;
-
-  std::vector<Lane> kept;
-  kept.reserve(level.lanes.size());
-  for (const Lane &l : level.lanes) {
-    if (l.start_idx == vertex_idx || l.end_idx == vertex_idx)
+namespace {
+// Drop edges touching vertex_idx, shift higher endpoints down by one.
+template <typename Edge>
+void reindex_edges(std::vector<Edge> &edges, int vertex_idx) {
+  std::vector<Edge> kept;
+  kept.reserve(edges.size());
+  for (const Edge &e : edges) {
+    if (e.start_idx == vertex_idx || e.end_idx == vertex_idx)
       continue;
-    Lane copy = l;
+    Edge copy = e;
     if (copy.start_idx > vertex_idx)
       --copy.start_idx;
     if (copy.end_idx > vertex_idx)
       --copy.end_idx;
     kept.push_back(std::move(copy));
   }
-  level.lanes = std::move(kept);
+  edges = std::move(kept);
+}
+
+std::vector<int> reindex_loop(const std::vector<int> &loop, int vertex_idx) {
+  std::vector<int> out;
+  out.reserve(loop.size());
+  for (int v : loop) {
+    if (v == vertex_idx)
+      continue;
+    out.push_back(v > vertex_idx ? v - 1 : v);
+  }
+  return out;
+}
+} // namespace
+
+void delete_vertex(Level &level, int vertex_idx) {
+  if (vertex_idx < 0 || vertex_idx >= (int)level.vertices.size())
+    return;
+
+  reindex_edges(level.lanes, vertex_idx);
+  reindex_edges(level.walls, vertex_idx);
+  reindex_edges(level.doors, vertex_idx);
+  reindex_edges(level.measurements, vertex_idx);
+
+  std::vector<Floor> kept_floors;
+  kept_floors.reserve(level.floors.size());
+  for (const Floor &f : level.floors) {
+    Floor copy = f;
+    copy.vertices = reindex_loop(f.vertices, vertex_idx);
+    if (copy.vertices.size() < 3)
+      continue;
+    copy.holes.clear();
+    for (const auto &hole : f.holes) {
+      std::vector<int> h = reindex_loop(hole, vertex_idx);
+      if (h.size() >= 3)
+        copy.holes.push_back(std::move(h));
+    }
+    kept_floors.push_back(std::move(copy));
+  }
+  level.floors = std::move(kept_floors);
+
   level.vertices.erase(level.vertices.begin() + vertex_idx);
 }
 

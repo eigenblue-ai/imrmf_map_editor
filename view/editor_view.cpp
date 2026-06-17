@@ -7,6 +7,7 @@
 #include "imgui/imgui.h"
 #include "imgui/misc/cpp/imgui_stdlib.h"
 #include "model/yaml_io.hpp"
+#include "view/canvas_controls.hpp"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -63,6 +64,66 @@ const std::array<LaneParamSpec, 7> kLaneParams = {{
     {"demo_mock_lift_name", ParamType::STRING},
 }};
 
+struct ParamSpec {
+  const char *key;
+  ParamType type;
+};
+const std::array<ParamSpec, 5> kWallParams = {{
+    {"texture_name", ParamType::STRING},
+    {"texture_height", ParamType::DOUBLE},
+    {"texture_width", ParamType::DOUBLE},
+    {"texture_scale", ParamType::DOUBLE},
+    {"alpha", ParamType::DOUBLE},
+}};
+// type uses a dedicated combo, the rest are plain fields
+const std::array<ParamSpec, 3> kDoorParams = {{
+    {"name", ParamType::STRING},
+    {"motion_degrees", ParamType::DOUBLE},
+    {"motion_direction", ParamType::INT},
+}};
+const std::array<ParamSpec, 3> kFloorParams = {{
+    {"texture_name", ParamType::STRING},
+    {"texture_rotation", ParamType::DOUBLE},
+    {"texture_scale", ParamType::DOUBLE},
+}};
+
+void ensure_params(
+    std::map<std::string, ParamValue> &p,
+    std::initializer_list<std::pair<const char *, ParamValue>> defs) {
+  for (const auto &[k, v] : defs)
+    if (p.find(k) == p.end())
+      p[k] = v;
+}
+void init_default_wall_params(Wall &w) {
+  ensure_params(w.params, {
+                              {"texture_name", ParamValue::make_string("")},
+                              {"texture_height", ParamValue::make_double(2.5)},
+                              {"texture_width", ParamValue::make_double(1.0)},
+                              {"texture_scale", ParamValue::make_double(1.0)},
+                              {"alpha", ParamValue::make_double(1.0)},
+                          });
+}
+void init_default_door_params(Door &d) {
+  ensure_params(d.params,
+                {
+                    {"name", ParamValue::make_string("")},
+                    {"type", ParamValue::make_string("hinged")},
+                    {"motion_axis", ParamValue::make_string("start")},
+                    {"motion_degrees", ParamValue::make_double(90.0)},
+                    {"motion_direction", ParamValue::make_int(1)},
+                });
+}
+void init_default_measurement_params(Measurement &m) {
+  ensure_params(m.params, {{"distance", ParamValue::make_double(1.0)}});
+}
+void init_default_floor_params(Floor &f) {
+  ensure_params(f.params, {
+                              {"texture_name", ParamValue::make_string("")},
+                              {"texture_rotation", ParamValue::make_double(0.0)},
+                              {"texture_scale", ParamValue::make_double(1.0)},
+                          });
+}
+
 float dist_point_segment(float px, float py, float ax, float ay, float bx,
                          float by) {
   float dx = bx - ax, dy = by - ay;
@@ -98,6 +159,17 @@ std::pair<double, double> snap_axis_or_diagonal(double dx, double dy) {
     return {0.0, dy};
   double m = (adx + ady) * 0.5;
   return {(dx >= 0 ? 1.0 : -1.0) * m, (dy >= 0 ? 1.0 : -1.0) * m};
+}
+
+// Snap a world point to H/V/45 off an anchor vertex while shift is held.
+// anchor_idx < 0 or shift off returns the point unchanged.
+std::pair<double, double> snap_to_anchor(const Level &level, int anchor_idx,
+                                         double wx, double wy, bool shift) {
+  if (!shift || anchor_idx < 0 || anchor_idx >= (int)level.vertices.size())
+    return {wx, wy};
+  const Vertex &a = level.vertices[anchor_idx];
+  auto [dx, dy] = snap_axis_or_diagonal(wx - a.x, wy - a.y);
+  return {a.x + dx, a.y + dy};
 }
 
 // Align operations on a set of selected vertices.
@@ -151,6 +223,18 @@ void mevjs_vertex_delete(const char *level, int idx);
 void mevjs_lane_add(const char *level, const char *yaml);
 void mevjs_lane_replace(const char *level, int idx, const char *yaml);
 void mevjs_lane_delete(const char *level, int idx);
+void mevjs_wall_add(const char *level, const char *yaml);
+void mevjs_wall_replace(const char *level, int idx, const char *yaml);
+void mevjs_wall_delete(const char *level, int idx);
+void mevjs_door_add(const char *level, const char *yaml);
+void mevjs_door_replace(const char *level, int idx, const char *yaml);
+void mevjs_door_delete(const char *level, int idx);
+void mevjs_measurement_add(const char *level, const char *yaml);
+void mevjs_measurement_replace(const char *level, int idx, const char *yaml);
+void mevjs_measurement_delete(const char *level, int idx);
+void mevjs_floor_add(const char *level, const char *yaml);
+void mevjs_floor_replace(const char *level, int idx, const char *yaml);
+void mevjs_floor_delete(const char *level, int idx);
 void mevjs_layer_set(const char *level, const char *layer_name,
                      const char *yaml);
 void mevjs_layer_delete(const char *level, const char *layer_name);
@@ -222,6 +306,37 @@ void yjs_op_lane_delete(const std::string &level, int idx) {
   (void)idx;
 #endif
 }
+
+#ifdef __EMSCRIPTEN__
+#define IMRMF_BRIDGE(call) call;
+#else
+#define IMRMF_BRIDGE(call)
+#endif
+// generates the yjs_op_<name>_{add,replace,delete} wrappers
+#define IMRMF_GEOM_OPS(Type, name)                                             \
+  void yjs_op_##name##_add(const std::string &lvl, const Type &e) {            \
+    if (g_readonly) return;                                                    \
+    (void)lvl; (void)e;                                                        \
+    IMRMF_BRIDGE(mevjs_##name##_add(lvl.c_str(), serialize_##name(e).c_str())) \
+  }                                                                            \
+  void yjs_op_##name##_replace(const std::string &lvl, int idx,               \
+                               const Type &e) {                               \
+    if (g_readonly) return;                                                    \
+    (void)lvl; (void)idx; (void)e;                                            \
+    IMRMF_BRIDGE(                                                              \
+        mevjs_##name##_replace(lvl.c_str(), idx, serialize_##name(e).c_str()))\
+  }                                                                            \
+  void yjs_op_##name##_delete(const std::string &lvl, int idx) {              \
+    if (g_readonly) return;                                                    \
+    (void)lvl; (void)idx;                                                     \
+    IMRMF_BRIDGE(mevjs_##name##_delete(lvl.c_str(), idx))                      \
+  }
+IMRMF_GEOM_OPS(Wall, wall)
+IMRMF_GEOM_OPS(Door, door)
+IMRMF_GEOM_OPS(Measurement, measurement)
+IMRMF_GEOM_OPS(Floor, floor)
+#undef IMRMF_GEOM_OPS
+#undef IMRMF_BRIDGE
 void yjs_op_layer_set(const std::string &level, const Layer &L) {
   if (g_readonly) return;
 #ifdef __EMSCRIPTEN__
@@ -459,6 +574,44 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
   ImGui::PopID();
 }
 
+// Bottom-right HUD listing whatever controls are active right now. Drawn to the
+// draw list like the coord HUD so it never captures canvas clicks.
+void draw_controls_overlay(const canvas::MapCanvas &c,
+                           const ControlContext &ctx) {
+  auto controls = canvas_controls().active(ctx);
+  if (controls.empty())
+    return;
+  std::string title = control_context_title(ctx);
+
+  const float pad = 8.0f, gap = 12.0f;
+  const float lh = ImGui::GetTextLineHeightWithSpacing();
+  float key_w = 0.0f, desc_w = 0.0f;
+  for (const CanvasControl *ctl : controls) {
+    key_w = std::max(key_w, ImGui::CalcTextSize(ctl->chord().c_str()).x);
+    desc_w = std::max(desc_w, ImGui::CalcTextSize(ctl->description().c_str()).x);
+  }
+  float inner_w = std::max(ImGui::CalcTextSize(title.c_str()).x, key_w + gap + desc_w);
+  float w = inner_w + pad * 2.0f;
+  float h = pad * 2.0f + lh + 4.0f + lh * (float)controls.size();
+
+  ImVec2 cp = c.canvas_pos(), cs = c.canvas_size();
+  ImVec2 tl(cp.x + cs.x - w - 8.0f, cp.y + cs.y - h - 8.0f);
+  ImDrawList *dl = c.draw_list();
+  dl->AddRectFilled(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(13, 13, 13, 200),
+                    4.0f);
+  dl->AddRect(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(255, 255, 255, 35), 4.0f);
+
+  float x = tl.x + pad, y = tl.y + pad;
+  dl->AddText(ImVec2(x, y), IM_COL32(150, 190, 255, 255), title.c_str());
+  y += lh + 4.0f;
+  for (const CanvasControl *ctl : controls) {
+    dl->AddText(ImVec2(x, y), IM_COL32(235, 225, 120, 255), ctl->chord().c_str());
+    dl->AddText(ImVec2(x + key_w + gap, y), IM_COL32(205, 205, 205, 255),
+                ctl->description().c_str());
+    y += lh;
+  }
+}
+
 } // namespace
 
 namespace {
@@ -525,6 +678,56 @@ EM_JS(void, mevjs_lane_replace, (const char *level, int idx, const char *yaml),
 EM_JS(void, mevjs_lane_delete, (const char *level, int idx), {
   if (window.imrmf.yjs)
     window.imrmf.yjs.laneDelete(UTF8ToString(level), idx);
+});
+EM_JS(void, mevjs_wall_add, (const char *level, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.wallAdd(UTF8ToString(level), UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_wall_replace, (const char *level, int idx, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.wallReplace(UTF8ToString(level), idx, UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_wall_delete, (const char *level, int idx), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.wallDelete(UTF8ToString(level), idx);
+});
+EM_JS(void, mevjs_door_add, (const char *level, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.doorAdd(UTF8ToString(level), UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_door_replace, (const char *level, int idx, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.doorReplace(UTF8ToString(level), idx, UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_door_delete, (const char *level, int idx), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.doorDelete(UTF8ToString(level), idx);
+});
+EM_JS(void, mevjs_measurement_add, (const char *level, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.measurementAdd(UTF8ToString(level), UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_measurement_replace,
+      (const char *level, int idx, const char *yaml), {
+        if (window.imrmf.yjs)
+          window.imrmf.yjs.measurementReplace(UTF8ToString(level), idx,
+                                              UTF8ToString(yaml));
+      });
+EM_JS(void, mevjs_measurement_delete, (const char *level, int idx), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.measurementDelete(UTF8ToString(level), idx);
+});
+EM_JS(void, mevjs_floor_add, (const char *level, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.floorAdd(UTF8ToString(level), UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_floor_replace, (const char *level, int idx, const char *yaml), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.floorReplace(UTF8ToString(level), idx, UTF8ToString(yaml));
+});
+EM_JS(void, mevjs_floor_delete, (const char *level, int idx), {
+  if (window.imrmf.yjs)
+    window.imrmf.yjs.floorDelete(UTF8ToString(level), idx);
 });
 EM_JS(void, mevjs_layer_set,
       (const char *level, const char *layer_name, const char *yaml), {
@@ -666,6 +869,12 @@ void EditorView::draw(Building &building, EditorState &state,
     ImGui::TextDisabled("View");
     ImGui::Checkbox("Show fiducials", &state.show_fiducials);
     if (!state.show_fiducials) state.selected_fiducial_idx = -1;
+    ImGui::Checkbox("Floors", &state.show_floors);
+    ImGui::SameLine();
+    ImGui::Checkbox("Walls", &state.show_walls);
+    ImGui::Checkbox("Doors", &state.show_doors);
+    ImGui::SameLine();
+    ImGui::Checkbox("Measurements", &state.show_measurements);
     ImGui::Separator();
     draw_add_layer_section(building, state);
     ImGui::Separator();
@@ -686,8 +895,21 @@ void EditorView::draw(Building &building, EditorState &state,
       state.mode = Mode::Vertex;
     if (ImGui::IsKeyPressed(ImGuiKey_L))
       state.mode = Mode::Lane;
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (ImGui::IsKeyPressed(ImGuiKey_W))
+      state.mode = Mode::Wall;
+    if (ImGui::IsKeyPressed(ImGuiKey_D))
+      state.mode = Mode::Door;
+    if (ImGui::IsKeyPressed(ImGuiKey_M))
+      state.mode = Mode::Measurement;
+    if (ImGui::IsKeyPressed(ImGuiKey_F))
+      state.mode = Mode::Floor;
+    if (ImGui::IsKeyPressed(ImGuiKey_H))
+      state.mode = Mode::Hole;
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       state.pending_lane_start = -1;
+      state.pending_edge_start = -1;
+      state.pending_polygon.clear();
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
       Level &level = building.levels[state.level_idx];
       if (!state.selected_lanes.empty()) {
@@ -698,6 +920,32 @@ void EditorView::draw(Building &building, EditorState &state,
           delete_lane(level, i);
         }
         state.selected_lanes.clear();
+      }
+      {
+        auto del = [&](std::vector<int> &sel, auto &edges, auto del_op) {
+          std::sort(sel.begin(), sel.end(), std::greater<int>());
+          for (int i : sel) {
+            if (i < 0 || i >= (int)edges.size())
+              continue;
+            del_op(level.name, i);
+            edges.erase(edges.begin() + i);
+          }
+          sel.clear();
+        };
+        del(state.selected_walls, level.walls,
+            [](const std::string &l, int i) { yjs_op_wall_delete(l, i); });
+        del(state.selected_doors, level.doors,
+            [](const std::string &l, int i) { yjs_op_door_delete(l, i); });
+        del(state.selected_measurements, level.measurements,
+            [](const std::string &l, int i) {
+              yjs_op_measurement_delete(l, i);
+            });
+        if (state.selected_floor >= 0 &&
+            state.selected_floor < (int)level.floors.size()) {
+          yjs_op_floor_delete(level.name, state.selected_floor);
+          level.floors.erase(level.floors.begin() + state.selected_floor);
+          state.selected_floor = -1;
+        }
       }
       if (state.selected_vertices.size() > 1) {
         auto sel = state.selected_vertices;
@@ -843,6 +1091,8 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     if (ImGui::Button(label)) {
       state.mode = m;
       state.pending_lane_start = -1;
+      state.pending_edge_start = -1;
+      state.pending_polygon.clear();
     }
     if (active)
       ImGui::PopStyleColor();
@@ -851,6 +1101,11 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   mode_button("Select [S]", Mode::Pan);
   mode_button("Vertex [V]", Mode::Vertex);
   mode_button("Lane [L]", Mode::Lane);
+  mode_button("Wall [W]", Mode::Wall);
+  mode_button("Door [D]", Mode::Door);
+  mode_button("Measure [M]", Mode::Measurement);
+  mode_button("Floor [F]", Mode::Floor);
+  mode_button("Hole [H]", Mode::Hole);
 
   {
     const bool active = state.align_floors_mode;
@@ -1029,6 +1284,10 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   opts.floorplan_sessions = &state.floorplan_session;
   opts.layer_sessions = &state.layer_session;
   opts.show_vertex_names = true;
+  opts.draw_floors = state.show_floors;
+  opts.draw_walls = state.show_walls;
+  opts.draw_doors = state.show_doors;
+  opts.draw_measurements = state.show_measurements;
   opts.after_draw = [&](const canvas::MapCanvas &c) {
     for (int li : state.selected_lanes) {
       if (li < 0 || li >= (int)level.lanes.size())
@@ -1054,6 +1313,79 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       const Vertex &v = level.vertices[state.pending_lane_start];
       ImVec2 p = c.world_to_screen(v.x, v.y);
       c.draw_list()->AddCircle(p, 9.5f, IM_COL32(80, 255, 120, 255), 0, 2.0f);
+    }
+    ImDrawList *gdl = c.draw_list();
+    auto vok = [&](int i) { return i >= 0 && i < (int)level.vertices.size(); };
+    auto edge_hl = [&](const std::vector<int> &sel, auto &edges, ImU32 col) {
+      for (int i : sel) {
+        if (i < 0 || i >= (int)edges.size())
+          continue;
+        const auto &e = edges[i];
+        if (!vok(e.start_idx) || !vok(e.end_idx))
+          continue;
+        ImVec2 a = c.world_to_screen(level.vertices[e.start_idx].x,
+                                     level.vertices[e.start_idx].y);
+        ImVec2 b = c.world_to_screen(level.vertices[e.end_idx].x,
+                                     level.vertices[e.end_idx].y);
+        gdl->AddLine(a, b, col, 7.0f);
+      }
+    };
+    edge_hl(state.selected_walls, level.walls, IM_COL32(120, 180, 255, 200));
+    edge_hl(state.selected_doors, level.doors, IM_COL32(255, 190, 90, 200));
+    edge_hl(state.selected_measurements, level.measurements,
+            IM_COL32(255, 240, 150, 200));
+    if (state.selected_floor >= 0 &&
+        state.selected_floor < (int)level.floors.size()) {
+      const Floor &f = level.floors[state.selected_floor];
+      for (size_t k = 0; k < f.vertices.size(); ++k) {
+        int va = f.vertices[k], vb = f.vertices[(k + 1) % f.vertices.size()];
+        if (!vok(va) || !vok(vb))
+          continue;
+        gdl->AddLine(c.world_to_screen(level.vertices[va].x,
+                                       level.vertices[va].y),
+                     c.world_to_screen(level.vertices[vb].x,
+                                       level.vertices[vb].y),
+                     IM_COL32(255, 255, 255, 220), 2.5f);
+      }
+    }
+
+    // In-progress edge / polygon previews. The ghost end follows the same
+    // shift snap that placement uses.
+    ImVec2 cursor = ImGui::GetIO().MousePos;
+    bool shift = ImGui::GetIO().KeyShift;
+    auto snapped_cursor = [&](int anchor) {
+      auto [cwx, cwy] = c.screen_to_world(cursor);
+      auto [sx, sy] = snap_to_anchor(level, anchor, cwx, cwy, shift);
+      return c.world_to_screen(sx, sy);
+    };
+    if (mode_is_edge(state.mode) && state.mode != Mode::Lane &&
+        vok(state.pending_edge_start)) {
+      ImVec2 a = c.world_to_screen(level.vertices[state.pending_edge_start].x,
+                                   level.vertices[state.pending_edge_start].y);
+      gdl->AddLine(a, snapped_cursor(state.pending_edge_start),
+                   IM_COL32(180, 200, 255, 150), 2.0f);
+      gdl->AddCircle(a, 9.5f, IM_COL32(80, 255, 120, 255), 0, 2.0f);
+    }
+    if (mode_is_polygon(state.mode) && !state.pending_polygon.empty()) {
+      for (size_t k = 0; k + 1 < state.pending_polygon.size(); ++k) {
+        int va = state.pending_polygon[k], vb = state.pending_polygon[k + 1];
+        if (vok(va) && vok(vb))
+          gdl->AddLine(c.world_to_screen(level.vertices[va].x,
+                                         level.vertices[va].y),
+                       c.world_to_screen(level.vertices[vb].x,
+                                         level.vertices[vb].y),
+                       IM_COL32(150, 220, 150, 200), 2.0f);
+      }
+      int last = state.pending_polygon.back();
+      if (vok(last))
+        gdl->AddLine(c.world_to_screen(level.vertices[last].x,
+                                       level.vertices[last].y),
+                     snapped_cursor(last), IM_COL32(150, 220, 150, 120), 2.0f);
+      int first = state.pending_polygon.front();
+      if (vok(first))
+        gdl->AddCircle(c.world_to_screen(level.vertices[first].x,
+                                         level.vertices[first].y),
+                       9.5f, IM_COL32(80, 255, 120, 255), 0, 2.0f);
     }
     if (marquee_active_) {
       ImVec2 a = marquee_start_;
@@ -1094,7 +1426,13 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     state.level_idx = new_idx;
     state.selected_vertices.clear();
     state.selected_lanes.clear();
+    state.selected_walls.clear();
+    state.selected_doors.clear();
+    state.selected_measurements.clear();
+    state.selected_floor = -1;
     state.pending_lane_start = -1;
+    state.pending_edge_start = -1;
+    state.pending_polygon.clear();
     state.selected_layer = -1;
     state.align_layer_idx = -1;
     reset_view();
@@ -1130,6 +1468,12 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
                               state.floorplan_session, state.layer_session,
                               layers_overlay_state_, canvas_, lcb);
   state.selected_layer = layers_overlay_state_.selected_layer;
+
+  ControlContext cctx;
+  cctx.mode = state.mode;
+  cctx.layer_align = state.align_layer_idx >= 0 &&
+                     state.align_layer_idx < (int)level.layers.size();
+  draw_controls_overlay(canvas_, cctx);
 
   ImGui::SetCursorScreenPos(canvas_.canvas_pos());
   ImGui::InvisibleButton("##canvas", canvas_.canvas_size());
@@ -1238,6 +1582,70 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     }
     return best;
   };
+  auto hit_edge = [&](ImVec2 m, auto &edges) -> int {
+    int best = -1;
+    float best_d = kLaneHitPx;
+    for (int i = 0; i < (int)edges.size(); ++i) {
+      const auto &e = edges[i];
+      if (e.start_idx < 0 || e.start_idx >= (int)level.vertices.size() ||
+          e.end_idx < 0 || e.end_idx >= (int)level.vertices.size())
+        continue;
+      ImVec2 a = world_to_screen(level.vertices[e.start_idx].x,
+                                 level.vertices[e.start_idx].y);
+      ImVec2 b = world_to_screen(level.vertices[e.end_idx].x,
+                                 level.vertices[e.end_idx].y);
+      float d = dist_point_segment(m.x, m.y, a.x, a.y, b.x, b.y);
+      if (d < best_d) {
+        best_d = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+  auto hit_floor = [&](ImVec2 m) -> int {
+    for (int i = (int)level.floors.size() - 1; i >= 0; --i) {
+      const Floor &f = level.floors[i];
+      if (f.vertices.size() < 3)
+        continue;
+      bool inside = false;
+      for (size_t a = 0, b = f.vertices.size() - 1; a < f.vertices.size();
+           b = a++) {
+        int ia = f.vertices[a], ib = f.vertices[b];
+        if (ia < 0 || ia >= (int)level.vertices.size() || ib < 0 ||
+            ib >= (int)level.vertices.size())
+          continue;
+        ImVec2 pa = world_to_screen(level.vertices[ia].x, level.vertices[ia].y);
+        ImVec2 pb = world_to_screen(level.vertices[ib].x, level.vertices[ib].y);
+        if (((pa.y > m.y) != (pb.y > m.y)) &&
+            (m.x < (pb.x - pa.x) * (m.y - pa.y) / (pb.y - pa.y) + pa.x))
+          inside = !inside;
+      }
+      if (inside)
+        return i;
+    }
+    return -1;
+  };
+
+  auto commit_polygon = [&]() {
+    if (state.pending_polygon.size() < 3) {
+      state.pending_polygon.clear();
+      return;
+    }
+    if (state.mode == Mode::Floor) {
+      Floor f;
+      f.vertices = state.pending_polygon;
+      init_default_floor_params(f);
+      yjs_op_floor_add(level.name, f);
+      level.floors.push_back(f);
+      state.selected_floor = (int)level.floors.size() - 1;
+    } else if (state.selected_floor >= 0 &&
+               state.selected_floor < (int)level.floors.size()) {
+      Floor &f = level.floors[state.selected_floor];
+      f.holes.push_back(state.pending_polygon);
+      yjs_op_floor_replace(level.name, state.selected_floor, f);
+    }
+    state.pending_polygon.clear();
+  };
 
   static bool s_dragging = false;
   static bool s_drag_moved_vertices = false;
@@ -1247,7 +1655,7 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
 
   constexpr float kClickThresholdPx = 4.0f;
 
-  if (hovered && (state.mode == Mode::Vertex || state.mode == Mode::Lane)) {
+  if (hovered && state.mode != Mode::Pan) {
     int hv = hit_vertex(mouse);
     ImDrawList *dl = canvas_.draw_list();
     if (state.mode == Mode::Lane && s_dragging) {
@@ -1297,6 +1705,12 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
                 IM_COL32(0, 0, 0, 230), 0.5f);
   }
 
+  if (mode_is_polygon(state.mode) && !ImGui::GetIO().WantTextInput &&
+      (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+       ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+    commit_polygon();
+  }
+
   if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     s_dragging = true;
     s_mouse_down_screen = mouse;
@@ -1309,6 +1723,16 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
 
     int vidx = hit_vertex(mouse);
     int lidx = (vidx < 0) ? hit_lane(mouse) : -1;
+    int widx = (vidx < 0 && lidx < 0) ? hit_edge(mouse, level.walls) : -1;
+    int didx =
+        (vidx < 0 && lidx < 0 && widx < 0) ? hit_edge(mouse, level.doors) : -1;
+    int midx = (vidx < 0 && lidx < 0 && widx < 0 && didx < 0)
+                   ? hit_edge(mouse, level.measurements)
+                   : -1;
+    int fidx =
+        (vidx < 0 && lidx < 0 && widx < 0 && didx < 0 && midx < 0)
+            ? hit_floor(mouse)
+            : -1;
 
     const bool shift = ImGui::GetIO().KeyShift;
     auto toggle_lane = [&](int li) {
@@ -1319,8 +1743,16 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       else
         state.selected_lanes.erase(it);
     };
+    auto clear_geom_sel = [&]() {
+      state.selected_walls.clear();
+      state.selected_doors.clear();
+      state.selected_measurements.clear();
+      state.selected_floor = -1;
+    };
     switch (state.mode) {
     case Mode::Pan: {
+      if (!shift)
+        clear_geom_sel();
       if (vidx >= 0) {
         if (shift) {
           if (is_selected(state.selected_vertices, vidx))
@@ -1345,6 +1777,22 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
           state.selected_lanes.clear();
           state.selected_lanes.push_back(lidx);
         }
+      } else if (widx >= 0) {
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+        state.selected_walls = {widx};
+      } else if (didx >= 0) {
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+        state.selected_doors = {didx};
+      } else if (midx >= 0) {
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+        state.selected_measurements = {midx};
+      } else if (fidx >= 0) {
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+        state.selected_floor = fidx;
       } else {
         if (!shift) {
           state.selected_vertices.clear();
@@ -1391,6 +1839,76 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     }
     case Mode::Lane: {
       // Decided at release so we can tell click-to-chain from drag-to-bisect.
+      break;
+    }
+    case Mode::Wall:
+    case Mode::Door:
+    case Mode::Measurement: {
+      int vi = vidx;
+      if (vi < 0) {
+        Vertex nv;
+        auto [nx, ny] = snap_to_anchor(level, state.pending_edge_start,
+                                       s_drag_start_world_x,
+                                       s_drag_start_world_y, shift);
+        nv.x = nx;
+        nv.y = ny;
+        yjs_op_vertex_add(level.name, nv);
+        level.vertices.push_back(nv);
+        vi = (int)level.vertices.size() - 1;
+      }
+      if (state.pending_edge_start < 0) {
+        state.pending_edge_start = vi;
+      } else if (state.pending_edge_start != vi) {
+        int s = state.pending_edge_start;
+        if (state.mode == Mode::Wall) {
+          Wall w;
+          w.start_idx = s;
+          w.end_idx = vi;
+          init_default_wall_params(w);
+          yjs_op_wall_add(level.name, w);
+          level.walls.push_back(w);
+        } else if (state.mode == Mode::Door) {
+          Door d;
+          d.start_idx = s;
+          d.end_idx = vi;
+          init_default_door_params(d);
+          yjs_op_door_add(level.name, d);
+          level.doors.push_back(d);
+        } else {
+          Measurement m;
+          m.start_idx = s;
+          m.end_idx = vi;
+          init_default_measurement_params(m);
+          yjs_op_measurement_add(level.name, m);
+          level.measurements.push_back(m);
+        }
+        state.pending_edge_start = vi;
+      }
+      break;
+    }
+    case Mode::Floor:
+    case Mode::Hole: {
+      if ((int)state.pending_polygon.size() >= 3 && vidx >= 0 &&
+          vidx == state.pending_polygon.front()) {
+        commit_polygon();
+        break;
+      }
+      int vi = vidx;
+      if (vi < 0) {
+        int anchor = state.pending_polygon.empty()
+                         ? -1
+                         : state.pending_polygon.back();
+        Vertex nv;
+        auto [nx, ny] = snap_to_anchor(level, anchor, s_drag_start_world_x,
+                                       s_drag_start_world_y, shift);
+        nv.x = nx;
+        nv.y = ny;
+        yjs_op_vertex_add(level.name, nv);
+        level.vertices.push_back(nv);
+        vi = (int)level.vertices.size() - 1;
+      }
+      if (state.pending_polygon.empty() || state.pending_polygon.back() != vi)
+        state.pending_polygon.push_back(vi);
       break;
     }
     }
@@ -1558,15 +2076,12 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
           state.selected_vertices.clear();
         } else {
           Vertex v;
-          v.x = s_drag_start_world_x;
-          v.y = s_drag_start_world_y;
-          if (ImGui::GetIO().KeyShift && state.pending_lane_start >= 0 &&
-              state.pending_lane_start < (int)level.vertices.size()) {
-            const Vertex &sv = level.vertices[state.pending_lane_start];
-            auto [snx, sny] = snap_axis_or_diagonal(v.x - sv.x, v.y - sv.y);
-            v.x = sv.x + snx;
-            v.y = sv.y + sny;
-          }
+          auto [vx, vy] = snap_to_anchor(level, state.pending_lane_start,
+                                         s_drag_start_world_x,
+                                         s_drag_start_world_y,
+                                         ImGui::GetIO().KeyShift);
+          v.x = vx;
+          v.y = vy;
           yjs_op_vertex_add(level.name, v);
           level.vertices.push_back(v);
           extend_chain((int)level.vertices.size() - 1);
@@ -2179,6 +2694,107 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       ImGui::PopID();
       emitted = true;
     }
+  }
+
+  if (!emitted && state.selected_walls.size() == 1 &&
+      state.selected_walls[0] >= 0 &&
+      state.selected_walls[0] < (int)level.walls.size()) {
+    int wi = state.selected_walls[0];
+    Wall &w = level.walls[wi];
+    ImGui::Text("Wall #%d  (%d -> %d)", wi, w.start_idx, w.end_idx);
+    ImGui::Separator();
+    init_default_wall_params(w);
+    bool d = false, c = false;
+    for (const auto &spec : kWallParams)
+      draw_param_editor(w.params, spec.key, spec.type, d, c);
+    if (c)
+      yjs_op_wall_replace(level.name, wi, w);
+    emitted = true;
+  }
+
+  if (!emitted && state.selected_doors.size() == 1 &&
+      state.selected_doors[0] >= 0 &&
+      state.selected_doors[0] < (int)level.doors.size()) {
+    int di = state.selected_doors[0];
+    Door &dr = level.doors[di];
+    ImGui::Text("Door #%d  (%d -> %d)", di, dr.start_idx, dr.end_idx);
+    ImGui::Separator();
+    init_default_door_params(dr);
+    bool d = false, c = false;
+    {
+      auto &pv = dr.params["type"];
+      if (pv.type != ParamType::STRING) {
+        pv.type = ParamType::STRING;
+        pv.s = "hinged";
+      }
+      const char *types[] = {"hinged", "double_hinged", "sliding",
+                             "double_sliding"};
+      int cur = 0;
+      for (int k = 0; k < 4; ++k)
+        if (pv.s == types[k])
+          cur = k;
+      ImGui::PushID("door_type");
+      if (ImGui::Combo("type", &cur, types, 4)) {
+        pv.s = types[cur];
+        c = true;
+      }
+      ImGui::PopID();
+    }
+    {
+      auto &pv = dr.params["motion_axis"];
+      if (pv.type != ParamType::STRING) {
+        pv.type = ParamType::STRING;
+        pv.s = "start";
+      }
+      const char *ax[] = {"start", "end"};
+      int cur = (pv.s == "end") ? 1 : 0;
+      ImGui::PushID("door_axis");
+      if (ImGui::Combo("motion_axis", &cur, ax, 2)) {
+        pv.s = ax[cur];
+        c = true;
+      }
+      ImGui::PopID();
+    }
+    for (const auto &spec : kDoorParams)
+      draw_param_editor(dr.params, spec.key, spec.type, d, c);
+    if (c)
+      yjs_op_door_replace(level.name, di, dr);
+    emitted = true;
+  }
+
+  if (!emitted && state.selected_measurements.size() == 1 &&
+      state.selected_measurements[0] >= 0 &&
+      state.selected_measurements[0] < (int)level.measurements.size()) {
+    int mi = state.selected_measurements[0];
+    Measurement &m = level.measurements[mi];
+    ImGui::Text("Measurement #%d  (%d -> %d)", mi, m.start_idx, m.end_idx);
+    ImGui::Separator();
+    init_default_measurement_params(m);
+    bool d = false, c = false;
+    draw_param_editor(m.params, "distance", ParamType::DOUBLE, d, c);
+    if (c)
+      yjs_op_measurement_replace(level.name, mi, m);
+    double mpp = compute_level_mpp(building, state.level_idx);
+    if (mpp > 0.0)
+      ImGui::TextDisabled("level scale: %.5f m/px", mpp);
+    emitted = true;
+  }
+
+  if (!emitted && state.selected_floor >= 0 &&
+      state.selected_floor < (int)level.floors.size()) {
+    int fi = state.selected_floor;
+    Floor &f = level.floors[fi];
+    ImGui::Text("Floor #%d  (%d vertices, %d holes)", fi,
+                (int)f.vertices.size(), (int)f.holes.size());
+    ImGui::Separator();
+    init_default_floor_params(f);
+    bool d = false, c = false;
+    for (const auto &spec : kFloorParams)
+      draw_param_editor(f.params, spec.key, spec.type, d, c);
+    if (c)
+      yjs_op_floor_replace(level.name, fi, f);
+    ImGui::TextDisabled("Hole mode [H] adds a hole to this floor.");
+    emitted = true;
   }
 
   if (!emitted) {

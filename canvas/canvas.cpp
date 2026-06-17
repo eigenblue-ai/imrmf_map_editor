@@ -125,6 +125,70 @@ void regenerate_colorize(LayerTexture &tex, double cr, double cg, double cb) {
   tex.last_color_b = cb;
 }
 
+float poly_signed_area2(const std::vector<ImVec2> &p) {
+  float a = 0.0f;
+  for (size_t i = 0, n = p.size(); i < n; ++i) {
+    const ImVec2 &u = p[i], &v = p[(i + 1) % n];
+    a += u.x * v.y - v.x * u.y;
+  }
+  return a;
+}
+
+bool point_in_tri(ImVec2 p, ImVec2 a, ImVec2 b, ImVec2 c) {
+  auto cross = [](ImVec2 u, ImVec2 v, ImVec2 w) {
+    return (v.x - u.x) * (w.y - u.y) - (v.y - u.y) * (w.x - u.x);
+  };
+  float d1 = cross(a, b, p), d2 = cross(b, c, p), d3 = cross(c, a, p);
+  bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  return !(neg && pos);
+}
+
+// Ear-clipping fill for a simple polygon. Holes aren't subtracted in v1, they
+// get outlined separately instead.
+void fill_simple_polygon(ImDrawList *dl, std::vector<ImVec2> pts, ImU32 col) {
+  if (pts.size() < 3)
+    return;
+  if (poly_signed_area2(pts) < 0.0f)
+    std::reverse(pts.begin(), pts.end());
+  std::vector<int> idx(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i)
+    idx[i] = (int)i;
+  size_t n = idx.size();
+  int guard = 0;
+  while (n > 3 && guard++ < 20000) {
+    bool clipped = false;
+    for (size_t i = 0; i < n; ++i) {
+      int ia = idx[(i + n - 1) % n], ib = idx[i], ic = idx[(i + 1) % n];
+      ImVec2 a = pts[ia], b = pts[ib], c = pts[ic];
+      float cr = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      if (cr <= 0.0f)
+        continue;
+      bool ear = true;
+      for (size_t j = 0; j < n; ++j) {
+        int ij = idx[j];
+        if (ij == ia || ij == ib || ij == ic)
+          continue;
+        if (point_in_tri(pts[ij], a, b, c)) {
+          ear = false;
+          break;
+        }
+      }
+      if (!ear)
+        continue;
+      dl->AddTriangleFilled(a, b, c, col);
+      idx.erase(idx.begin() + i);
+      --n;
+      clipped = true;
+      break;
+    }
+    if (!clipped)
+      break;
+  }
+  if (n == 3)
+    dl->AddTriangleFilled(pts[idx[0]], pts[idx[1]], pts[idx[2]], col);
+}
+
 } // namespace
 
 TextureProvider::~TextureProvider() {
@@ -276,6 +340,59 @@ void MapCanvas::draw(const Building &building, int level_idx,
     }
   }
 
+  auto vtx_ok = [&](int i) {
+    return i >= 0 && i < (int)level.vertices.size();
+  };
+
+  if (opts.draw_floors) {
+    for (const Floor &f : level.floors) {
+      std::vector<ImVec2> pts;
+      bool ok = f.vertices.size() >= 3;
+      for (int vi : f.vertices) {
+        if (!vtx_ok(vi)) {
+          ok = false;
+          break;
+        }
+        pts.push_back(world_to_screen(level.vertices[vi].x,
+                                      level.vertices[vi].y));
+      }
+      if (!ok)
+        continue;
+      fill_simple_polygon(draw_list_, pts, IM_COL32(110, 140, 180, 45));
+      draw_list_->AddPolyline(pts.data(), (int)pts.size(),
+                              IM_COL32(150, 175, 210, 170), ImDrawFlags_Closed,
+                              1.5f);
+      for (const auto &hole : f.holes) {
+        std::vector<ImVec2> hp;
+        bool hok = hole.size() >= 3;
+        for (int vi : hole) {
+          if (!vtx_ok(vi)) {
+            hok = false;
+            break;
+          }
+          hp.push_back(world_to_screen(level.vertices[vi].x,
+                                       level.vertices[vi].y));
+        }
+        if (hok)
+          draw_list_->AddPolyline(hp.data(), (int)hp.size(),
+                                  IM_COL32(150, 175, 210, 170),
+                                  ImDrawFlags_Closed, 1.5f);
+      }
+    }
+  }
+
+  if (opts.draw_walls) {
+    for (const Wall &w : level.walls) {
+      if (!vtx_ok(w.start_idx) || !vtx_ok(w.end_idx))
+        continue;
+      ImVec2 a = world_to_screen(level.vertices[w.start_idx].x,
+                                 level.vertices[w.start_idx].y);
+      ImVec2 b = world_to_screen(level.vertices[w.end_idx].x,
+                                 level.vertices[w.end_idx].y);
+      draw_list_->AddLine(a, b, IM_COL32(70, 130, 220, 235), 3.0f);
+    }
+  }
+
   if (opts.draw_lanes) {
     for (const Lane &l : level.lanes) {
       if (l.start_idx < 0 || l.start_idx >= (int)level.vertices.size() ||
@@ -300,6 +417,74 @@ void MapCanvas::draw(const Building &building, int level_idx,
           ImVec2 rgt(mid.x + dy * h * 0.5f, mid.y - dx * h * 0.5f);
           draw_list_->AddTriangleFilled(tip, lft, rgt, col);
         }
+      }
+    }
+  }
+
+  if (opts.draw_doors) {
+    for (const Door &d : level.doors) {
+      if (!vtx_ok(d.start_idx) || !vtx_ok(d.end_idx))
+        continue;
+      ImVec2 a = world_to_screen(level.vertices[d.start_idx].x,
+                                 level.vertices[d.start_idx].y);
+      ImVec2 b = world_to_screen(level.vertices[d.end_idx].x,
+                                 level.vertices[d.end_idx].y);
+      const ImU32 col = IM_COL32(235, 150, 40, 240);
+      draw_list_->AddLine(a, b, col, 3.0f);
+      float len = std::sqrt((b.x - a.x) * (b.x - a.x) +
+                            (b.y - a.y) * (b.y - a.y));
+      if (len > 1.0f) {
+        double deg = 90.0;
+        double dir = 1.0;
+        auto pd = d.params.find("motion_degrees");
+        if (pd != d.params.end())
+          deg = pd->second.type == ParamType::INT ? pd->second.i
+                                                   : pd->second.d;
+        auto pdir = d.params.find("motion_direction");
+        if (pdir != d.params.end() && pdir->second.type == ParamType::INT &&
+            pdir->second.i < 0)
+          dir = -1.0;
+        float base = std::atan2(b.y - a.y, b.x - a.x);
+        float sweep = (float)(deg * 3.14159265358979323846 / 180.0) *
+                      (float)dir;
+        draw_list_->PathArcTo(a, len, base, base + sweep, 16);
+        draw_list_->PathStroke(IM_COL32(235, 150, 40, 130), 0, 1.5f);
+      }
+    }
+  }
+
+  if (opts.draw_measurements) {
+    for (const Measurement &m : level.measurements) {
+      if (!vtx_ok(m.start_idx) || !vtx_ok(m.end_idx))
+        continue;
+      ImVec2 a = world_to_screen(level.vertices[m.start_idx].x,
+                                 level.vertices[m.start_idx].y);
+      ImVec2 b = world_to_screen(level.vertices[m.end_idx].x,
+                                 level.vertices[m.end_idx].y);
+      const ImU32 col = IM_COL32(255, 225, 110, 235);
+      float dx = b.x - a.x, dy = b.y - a.y;
+      float len = std::sqrt(dx * dx + dy * dy);
+      if (len > 1.0f) {
+        dx /= len;
+        dy /= len;
+        const float dash = 9.0f, gap = 6.0f;
+        for (float t = 0.0f; t < len; t += dash + gap) {
+          float e = std::min(t + dash, len);
+          draw_list_->AddLine(ImVec2(a.x + dx * t, a.y + dy * t),
+                              ImVec2(a.x + dx * e, a.y + dy * e), col, 1.8f);
+        }
+      } else {
+        draw_list_->AddLine(a, b, col, 1.8f);
+      }
+      auto pd = m.params.find("distance");
+      if (pd != m.params.end()) {
+        double meters = pd->second.type == ParamType::INT ? pd->second.i
+                                                          : pd->second.d;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.2f m", meters);
+        draw_list_->AddText(ImVec2((a.x + b.x) * 0.5f + 4.0f,
+                                   (a.y + b.y) * 0.5f - 14.0f),
+                            col, buf);
       }
     }
   }

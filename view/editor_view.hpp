@@ -25,7 +25,20 @@ enum class Mode {
   Pan,
   Vertex,
   Lane,
+  Wall,
+  Door,
+  Measurement,
+  Floor,
+  Hole,
 };
+
+inline bool mode_is_edge(Mode m) {
+  return m == Mode::Lane || m == Mode::Wall || m == Mode::Door ||
+         m == Mode::Measurement;
+}
+inline bool mode_is_polygon(Mode m) {
+  return m == Mode::Floor || m == Mode::Hole;
+}
 
 enum class SaveState {
   Idle,
@@ -44,7 +57,13 @@ struct EditorState {
   int level_idx = 0;
   std::vector<int> selected_vertices;
   std::vector<int> selected_lanes;
+  std::vector<int> selected_walls;
+  std::vector<int> selected_doors;
+  std::vector<int> selected_measurements;
+  int selected_floor = -1;
   int pending_lane_start = -1;
+  int pending_edge_start = -1;       // wall / door / measurement chain
+  std::vector<int> pending_polygon;  // floor / hole loop under construction
   bool dirty = false;
 
   bool pending_vertex_delete = false;
@@ -90,6 +109,11 @@ struct EditorState {
 
   bool show_fiducials = false;
   int selected_fiducial_idx = -1;
+
+  bool show_walls = true;
+  bool show_floors = true;
+  bool show_doors = true;
+  bool show_measurements = true;
 
   struct SnapshotEntry {
     std::string dir;
