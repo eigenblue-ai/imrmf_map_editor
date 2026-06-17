@@ -73,6 +73,7 @@ StbTextureProvider::StbTextureProvider(std::filesystem::path root)
     : root_(std::move(root)) {}
 
 void StbTextureProvider::trigger_load(LayerTexture &out,
+                                      const std::string & /*cache_key*/,
                                       const std::string &asset_id,
                                       const std::string &asset_path, double tr,
                                       double tg, double tb) {

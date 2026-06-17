@@ -29,7 +29,7 @@ cc_binary(
             "-sFETCH=1",
             "-sFORCE_FILESYSTEM=1",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
-            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_layer_decoded",
+            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded",
         ],
         "//conditions:default": [],
     }),

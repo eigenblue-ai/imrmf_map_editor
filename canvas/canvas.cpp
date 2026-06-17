@@ -64,6 +64,18 @@ bool is_bidirectional(const Lane &l) {
 
 namespace {
 
+// 0 = unconstrained, +1 = forward (start->end), -1 = backward.
+int lane_orientation_sign(const Lane &l) {
+  auto it = l.params.find("orientation");
+  if (it == l.params.end() || it->second.type != ParamType::STRING)
+    return 0;
+  if (it->second.s == "forward")
+    return 1;
+  if (it->second.s == "backward")
+    return -1;
+  return 0;
+}
+
 unsigned int upload_rgba(const unsigned char *data, int w, int h) {
   unsigned int id = 0;
   glGenTextures(1, &id);
@@ -207,7 +219,7 @@ LayerTexture &TextureProvider::acquire(const std::string &cache_key,
   auto &tex = textures_[cache_key];
   if (tex.status == LoadStatus::NotStarted) {
     tex.status = LoadStatus::Loading;
-    trigger_load(tex, asset_id, asset_path, tr, tg, tb);
+    trigger_load(tex, cache_key, asset_id, asset_path, tr, tg, tb);
   }
   return tex;
 }
@@ -245,18 +257,47 @@ void MapCanvas::draw(const Building &building, int level_idx,
   canvas_center_ = ImVec2(canvas_pos_.x + canvas_size_.x * 0.5f,
                           canvas_pos_.y + canvas_size_.y * 0.5f);
 
-  // Fit-to-canvas on first frame using the floorplan dimensions.
-  if (!view_state_.view_initialized && opts.draw_floorplan && provider_ &&
-      !level.drawing_filename.empty()) {
-    LayerTexture &fp = provider_->acquire(
-        "fp:" + level.name, asset_id_, level.drawing_filename, 1.0, 1.0, 1.0);
-    if (fp.status == LoadStatus::Ok && fp.width > 0 && fp.height > 0) {
-      float sx = canvas_size_.x / (float)fp.width;
-      float sy = canvas_size_.y / (float)fp.height;
-      view_state_.scale = std::min(sx, sy) * 0.9f;
-      view_state_.offset_x = -(float)fp.width * 0.5f * view_state_.scale;
-      view_state_.offset_y = -(float)fp.height * 0.5f * view_state_.scale;
-      view_state_.view_initialized = true;
+  // Fit on the first frame. Vertices are available synchronously, so fitting to
+  // their bbox lets the first painted frame already be correct instead of
+  // snapping once the floorplan image finishes loading. Levels with no vertices
+  // fall back to waiting for the floorplan dimensions.
+  auto fit_to = [&](double cx, double cy, float bw, float bh) {
+    float scale = 1.0f;
+    bool have = false;
+    if (bw > 1e-3f) {
+      scale = canvas_size_.x / bw;
+      have = true;
+    }
+    if (bh > 1e-3f) {
+      float s = canvas_size_.y / bh;
+      scale = have ? std::min(scale, s) : s;
+      have = true;
+    }
+    scale = have ? scale * 0.9f : 1.0f;
+    view_state_.scale = std::clamp(scale, 0.05f, 50.0f);
+    view_state_.offset_x = -(float)cx * view_state_.scale;
+    view_state_.offset_y = -(float)cy * view_state_.scale;
+    view_state_.view_initialized = true;
+  };
+  if (!view_state_.view_initialized) {
+    if (!level.vertices.empty()) {
+      double minx = level.vertices[0].x, maxx = minx;
+      double miny = level.vertices[0].y, maxy = miny;
+      for (const Vertex &v : level.vertices) {
+        minx = std::min(minx, v.x);
+        maxx = std::max(maxx, v.x);
+        miny = std::min(miny, v.y);
+        maxy = std::max(maxy, v.y);
+      }
+      fit_to((minx + maxx) * 0.5, (miny + maxy) * 0.5, (float)(maxx - minx),
+             (float)(maxy - miny));
+    } else if (opts.draw_floorplan && provider_ &&
+               !level.drawing_filename.empty()) {
+      LayerTexture &fp = provider_->acquire(
+          "fp:" + level.name, asset_id_, level.drawing_filename, 1.0, 1.0, 1.0);
+      if (fp.status == LoadStatus::Ok && fp.width > 0 && fp.height > 0)
+        fit_to((double)fp.width * 0.5, (double)fp.height * 0.5, (float)fp.width,
+               (float)fp.height);
     }
   }
 
@@ -404,19 +445,35 @@ void MapCanvas::draw(const Building &building, int level_idx,
                                  level.vertices[l.end_idx].y);
       ImU32 col = lane_color(l);
       draw_list_->AddLine(a, b, col, 2.0f);
-      if (!is_bidirectional(l)) {
-        ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-        float dx = b.x - a.x, dy = b.y - a.y;
-        float len = std::sqrt(dx * dx + dy * dy);
-        if (len > 1e-3f) {
-          dx /= len;
-          dy /= len;
-          const float h = 8.0f;
-          ImVec2 tip(mid.x + dx * h, mid.y + dy * h);
-          ImVec2 lft(mid.x - dy * h * 0.5f, mid.y + dx * h * 0.5f);
-          ImVec2 rgt(mid.x + dy * h * 0.5f, mid.y - dx * h * 0.5f);
-          draw_list_->AddTriangleFilled(tip, lft, rgt, col);
-        }
+      ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+      float dx = b.x - a.x, dy = b.y - a.y;
+      float len = std::sqrt(dx * dx + dy * dy);
+      int orient = lane_orientation_sign(l);
+      if (!is_bidirectional(l) && len > 1e-3f) {
+        // one-way: hollow double chevron along start->end
+        float tx = dx / len, ty = dy / len;
+        float px = -ty, py = tx;
+        const float s = 5.0f;
+        auto chevron = [&](float cx, float cy) {
+          ImVec2 tip(cx + tx * s, cy + ty * s);
+          ImVec2 l(cx - tx * s + px * s, cy - ty * s + py * s);
+          ImVec2 r(cx - tx * s - px * s, cy - ty * s - py * s);
+          draw_list_->AddLine(tip, l, col, 2.0f);
+          draw_list_->AddLine(tip, r, col, 2.0f);
+        };
+        chevron(mid.x + tx * 4.0f, mid.y + ty * 4.0f);
+        chevron(mid.x - tx * 4.0f, mid.y - ty * 4.0f);
+      } else if (orient != 0 && len > 1e-3f) {
+        // bidirectional + orientation: filled triangle along the constrained dir
+        float ux = dx / len * orient, uy = dy / len * orient;
+        float px = -uy, py = ux;
+        const float lng = 16.0f, wid = 12.0f;
+        ImVec2 tip(mid.x + ux * lng * 0.6f, mid.y + uy * lng * 0.6f);
+        ImVec2 lft(mid.x - ux * lng * 0.4f + px * wid * 0.5f,
+                   mid.y - uy * lng * 0.4f + py * wid * 0.5f);
+        ImVec2 rgt(mid.x - ux * lng * 0.4f - px * wid * 0.5f,
+                   mid.y - uy * lng * 0.4f - py * wid * 0.5f);
+        draw_list_->AddTriangleFilled(tip, lft, rgt, col);
       }
     }
   }

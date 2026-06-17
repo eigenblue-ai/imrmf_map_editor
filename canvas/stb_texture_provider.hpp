@@ -16,9 +16,9 @@ public:
   explicit StbTextureProvider(std::filesystem::path root);
 
 protected:
-  void trigger_load(LayerTexture &out, const std::string &asset_id,
-                    const std::string &asset_path, double tint_r, double tint_g,
-                    double tint_b) override;
+  void trigger_load(LayerTexture &out, const std::string &cache_key,
+                    const std::string &asset_id, const std::string &asset_path,
+                    double tint_r, double tint_g, double tint_b) override;
 
 private:
   std::filesystem::path root_;

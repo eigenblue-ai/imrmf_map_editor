@@ -24,9 +24,9 @@ public:
   void set_url_builder(UrlBuilder b) { url_builder_ = std::move(b); }
 
 protected:
-  void trigger_load(LayerTexture &out, const std::string &asset_id,
-                    const std::string &asset_path, double tint_r, double tint_g,
-                    double tint_b) override;
+  void trigger_load(LayerTexture &out, const std::string &cache_key,
+                    const std::string &asset_id, const std::string &asset_path,
+                    double tint_r, double tint_g, double tint_b) override;
 
 private:
   UrlBuilder url_builder_;

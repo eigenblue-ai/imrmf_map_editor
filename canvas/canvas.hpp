@@ -41,7 +41,8 @@ public:
   void clear_cache() { textures_.clear(); }
 
 protected:
-  virtual void trigger_load(LayerTexture &out, const std::string &asset_id,
+  virtual void trigger_load(LayerTexture &out, const std::string &cache_key,
+                            const std::string &asset_id,
                             const std::string &asset_path, double tint_r,
                             double tint_g, double tint_b) = 0;
 
