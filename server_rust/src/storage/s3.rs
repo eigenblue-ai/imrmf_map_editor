@@ -12,11 +12,12 @@ use bytes::Bytes;
 
 use super::{MountInfo, SnapshotInfo, Storage};
 
-/// Each building lives at `<prefix>/<id>/<id>.building.yaml`
+/// Maps live at `<prefix>/maps/<branch>/<id>/<id>.building.yaml`.
 pub struct S3Storage {
     client: Client,
     bucket: String,
     prefix: String,
+    branch: String,
     region: String,
     cache_root: PathBuf,
 }
@@ -24,6 +25,7 @@ pub struct S3Storage {
 pub struct S3Config {
     pub bucket: String,
     pub prefix: String,
+    pub branch: String,
     pub region: String,
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -64,6 +66,7 @@ impl S3Storage {
             client,
             bucket: cfg.bucket,
             prefix: trim_slashes(&cfg.prefix),
+            branch: sanitize_branch(&cfg.branch),
             region: cfg.region,
             cache_root: cfg.cache_root,
         };
@@ -81,31 +84,35 @@ impl S3Storage {
         Ok(())
     }
 
+    fn branch_root(&self, branch: &str) -> String {
+        join_key(&self.prefix, &format!("{MAPS_ROOT}/{branch}"))
+    }
+
     fn yaml_key(&self, building_id: &str) -> String {
         join_key(
-            &self.prefix,
+            &self.branch_root(&self.branch),
             &format!("{building_id}/{building_id}.building.yaml"),
         )
     }
 
     fn asset_key(&self, building_id: &str, path: &str) -> String {
-        join_key(&self.prefix, &format!("{building_id}/{path}"))
+        join_key(&self.branch_root(&self.branch), &format!("{building_id}/{path}"))
     }
 
     fn snapshots_prefix(&self, building_id: &str) -> String {
-        join_key(&self.prefix, &format!("{building_id}/snapshots/"))
+        join_key(&self.branch_root(&self.branch), &format!("{building_id}/snapshots/"))
     }
 
     fn snapshot_yaml_key(&self, building_id: &str, dir: &str) -> String {
         join_key(
-            &self.prefix,
+            &self.branch_root(&self.branch),
             &format!("{building_id}/snapshots/{dir}/{building_id}.building.yaml"),
         )
     }
 
     fn snapshot_asset_key(&self, building_id: &str, dir: &str, path: &str) -> String {
         join_key(
-            &self.prefix,
+            &self.branch_root(&self.branch),
             &format!("{building_id}/snapshots/{dir}/{path}"),
         )
     }
@@ -125,14 +132,8 @@ impl Storage for S3Storage {
             .list_objects_v2()
             .bucket(&self.bucket)
             .delimiter("/");
-        let list_prefix = if self.prefix.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", self.prefix)
-        };
-        if !list_prefix.is_empty() {
-            req = req.prefix(&list_prefix);
-        }
+        let list_prefix = format!("{}/", self.branch_root(&self.branch));
+        req = req.prefix(&list_prefix);
         let resp = req.send().await.context("s3 list_objects_v2")?;
         let mut out = Vec::new();
         for cp in resp.common_prefixes() {
@@ -145,7 +146,8 @@ impl Storage for S3Storage {
                 continue;
             }
             // Only list folders that are actual buildings
-            let yaml_key = join_key(&self.prefix, &format!("{dir}/{dir}.building.yaml"));
+            let yaml_key =
+                join_key(&self.branch_root(&self.branch), &format!("{dir}/{dir}.building.yaml"));
             if self
                 .client
                 .head_object()
@@ -262,6 +264,7 @@ impl Storage for S3Storage {
         MountInfo::S3 {
             bucket: self.bucket.clone(),
             prefix: self.prefix.clone(),
+            branch: self.branch.clone(),
             region: self.region.clone(),
         }
     }
@@ -351,10 +354,144 @@ impl Storage for S3Storage {
             .with_context(|| format!("s3 get {}", key))?;
         Ok(resp.body.collect().await?.into_bytes())
     }
+
+    async fn list_branches(&self) -> Result<Vec<String>> {
+        let list_prefix = format!("{}/", join_key(&self.prefix, MAPS_ROOT));
+        let resp = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&list_prefix)
+            .delimiter("/")
+            .send()
+            .await
+            .context("s3 list_branches")?;
+        let mut out = Vec::new();
+        for cp in resp.common_prefixes() {
+            let Some(p) = cp.prefix() else { continue };
+            let b = p.strip_prefix(&list_prefix).unwrap_or(p).trim_end_matches('/');
+            if !b.is_empty() {
+                out.push(b.to_string());
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    async fn deploy_snapshot(&self, building_id: &str, dir: &str, dst_branch: &str) -> Result<()> {
+        let dst_branch = sanitize_branch(dst_branch);
+        let src_dir_prefix = format!("{}{dir}/", self.snapshots_prefix(building_id));
+        let dst_dir_prefix = join_key(
+            &self.branch_root(&dst_branch),
+            &format!("{building_id}/snapshots/{dir}/"),
+        );
+        let mut token: Option<String> = None;
+        let mut copied = 0usize;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&src_dir_prefix);
+            if let Some(t) = &token {
+                req = req.continuation_token(t);
+            }
+            let resp = req.send().await.context("s3 deploy_snapshot list")?;
+            for obj in resp.contents() {
+                let Some(key) = obj.key() else { continue };
+                let rel = key.strip_prefix(&src_dir_prefix).unwrap_or("");
+                if rel.is_empty() {
+                    continue;
+                }
+                let dst_key = format!("{dst_dir_prefix}{rel}");
+                self.client
+                    .copy_object()
+                    .bucket(&self.bucket)
+                    .copy_source(format!("{}/{}", self.bucket, key))
+                    .key(&dst_key)
+                    .send()
+                    .await
+                    .with_context(|| format!("s3 copy {key} -> {dst_key}"))?;
+                copied += 1;
+            }
+            if resp.is_truncated().unwrap_or(false) {
+                token = resp.next_continuation_token().map(str::to_string);
+                if token.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if copied == 0 {
+            anyhow::bail!("snapshot {dir} not found for {building_id}");
+        }
+        Ok(())
+    }
+
+    async fn deploy_latest(&self, building_id: &str, dst_branch: &str) -> Result<()> {
+        let dst_branch = sanitize_branch(dst_branch);
+        let src_prefix = format!("{}/", join_key(&self.branch_root(&self.branch), building_id));
+        let dst_prefix = format!("{}/", join_key(&self.branch_root(&dst_branch), building_id));
+        let mut token: Option<String> = None;
+        let mut copied = 0usize;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&src_prefix);
+            if let Some(t) = &token {
+                req = req.continuation_token(t);
+            }
+            let resp = req.send().await.context("s3 deploy_latest list")?;
+            for obj in resp.contents() {
+                let Some(key) = obj.key() else { continue };
+                let rel = key.strip_prefix(&src_prefix).unwrap_or("");
+                if rel.is_empty() || rel.starts_with("snapshots/") {
+                    continue;
+                }
+                let dst_key = format!("{dst_prefix}{rel}");
+                self.client
+                    .copy_object()
+                    .bucket(&self.bucket)
+                    .copy_source(format!("{}/{}", self.bucket, key))
+                    .key(&dst_key)
+                    .send()
+                    .await
+                    .with_context(|| format!("s3 copy {key} -> {dst_key}"))?;
+                copied += 1;
+            }
+            if resp.is_truncated().unwrap_or(false) {
+                token = resp.next_continuation_token().map(str::to_string);
+                if token.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if copied == 0 {
+            anyhow::bail!("no live map for {building_id} on branch {}", self.branch);
+        }
+        Ok(())
+    }
 }
 
 fn trim_slashes(s: &str) -> String {
     s.trim_matches('/').to_string()
+}
+
+const MAPS_ROOT: &str = "maps";
+
+fn sanitize_branch(s: &str) -> String {
+    let b = s.trim().trim_matches('/');
+    if b.is_empty() {
+        return "main".to_string();
+    }
+    b.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }
 
 fn join_key(prefix: &str, key: &str) -> String {

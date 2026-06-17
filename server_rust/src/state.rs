@@ -25,6 +25,7 @@ pub struct AppState {
     storage: RwLock<Option<Arc<dyn Storage>>>,
     /// Building id loaded into the Doc, if any.
     mounted_building: RwLock<Option<String>>,
+    last_mount_cfg: RwLock<Option<MountConfig>>,
 
     locked: bool,
 
@@ -73,6 +74,7 @@ impl AppState {
             validator,
             storage: RwLock::new(None),
             mounted_building: RwLock::new(None),
+            last_mount_cfg: RwLock::new(None),
             locked,
             nav_graph_cache: Mutex::new(HashMap::new()),
             inner: Mutex::new(Inner {
@@ -121,6 +123,7 @@ impl AppState {
         cfg: MountConfig,
         cache_root: &std::path::Path,
     ) -> Result<Vec<String>> {
+        let cfg_for_store = cfg.clone();
         let storage: Arc<dyn Storage> = match cfg {
             MountConfig::Local { path } => {
                 Arc::new(crate::storage::local::LocalFsStorage::new(path.into())?)
@@ -128,6 +131,7 @@ impl AppState {
             MountConfig::S3 {
                 bucket,
                 prefix,
+                branch,
                 region,
                 access_key_id,
                 secret_access_key,
@@ -137,6 +141,7 @@ impl AppState {
                 crate::storage::s3::S3Storage::new(crate::storage::s3::S3Config {
                     bucket,
                     prefix,
+                    branch,
                     region,
                     access_key_id,
                     secret_access_key,
@@ -152,6 +157,7 @@ impl AppState {
             let mut slot = self.storage.write().await;
             *slot = Some(storage);
         }
+        *self.last_mount_cfg.write().await = Some(cfg_for_store);
         *self.mounted_building.write().await = None;
         // Reset doc + validation so a stale prior session can't leak through.
         self.reseed_doc("").await.ok();
@@ -160,6 +166,42 @@ impl AppState {
         inner.last_valid_yaml = None;
         inner.last_validated_hash = 0;
         Ok(buildings)
+    }
+
+    pub async fn switch_branch(
+        &self,
+        new_branch: &str,
+        cache_root: &std::path::Path,
+    ) -> Result<Vec<String>> {
+        let cfg = self
+            .last_mount_cfg
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow!("no active mount to switch"))?;
+        let new_cfg = match cfg {
+            MountConfig::S3 {
+                bucket,
+                prefix,
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                endpoint_url,
+                ..
+            } => MountConfig::S3 {
+                bucket,
+                prefix,
+                branch: new_branch.to_string(),
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                endpoint_url,
+            },
+            _ => return Err(anyhow!("branch switch requires an S3 mount")),
+        };
+        self.mount(new_cfg, cache_root).await
     }
 
     pub async fn load_building(&self, building_id: &str) -> Result<()> {

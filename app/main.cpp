@@ -40,6 +40,7 @@ std::string g_building_id;
 std::string g_server_url;
 std::string g_active_snapshot_dir;
 bool g_snapshots_dirty = true;
+bool g_branches_dirty = true;
 
 enum class ConnPhase {
   BootingConfig, // GET /config in flight (decides whether to show modal)
@@ -388,6 +389,104 @@ EM_JS(void, imrmf_snap_reset_result, (), {
     window.imrmf._snap_result = {code : 'idle', payload : null};
 });
 
+EM_JS(void, imrmf_call_list_branches, (const char *server_c), {
+  if (!window.imrmf) return;
+  window.imrmf._branch_result = {code : 'busy', payload : null};
+  let base = UTF8ToString(server_c) || window.location.origin;
+  while (base.length > 0 && base[base.length - 1] === '/')
+    base = base.substring(0, base.length - 1);
+  fetch(base + "/branches")
+      .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+      .then(d => { window.imrmf._branch_result = {code : 'list', payload : d}; })
+      .catch(e => {
+        window.imrmf._branch_result = {code : 'err', payload : String(e)};
+      });
+});
+
+EM_JS(void, imrmf_call_deploy_snapshot,
+      (const char *server_c, const char *id_c, const char *dir_c,
+       const char *to_c), {
+        if (!window.imrmf) return;
+        window.imrmf._branch_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        const dir = UTF8ToString(dir_c);
+        const to = UTF8ToString(to_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/snapshots/" +
+                  encodeURIComponent(dir) + "/deploy",
+              {
+                method : "POST",
+                headers : {"Content-Type" : "application/json"},
+                body : JSON.stringify({to : to})
+              })
+            .then(r => r.ok ? r.text() : r.text().then(t => Promise.reject(t)))
+            .then(t => {
+              window.imrmf._branch_result = {code : 'deployed', payload : t};
+            })
+            .catch(e => {
+              window.imrmf._branch_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(void, imrmf_call_deploy_latest,
+      (const char *server_c, const char *id_c, const char *to_c), {
+        if (!window.imrmf) return;
+        window.imrmf._branch_result = {code : 'busy', payload : null};
+        let base = UTF8ToString(server_c) || window.location.origin;
+        while (base.length > 0 && base[base.length - 1] === '/')
+          base = base.substring(0, base.length - 1);
+        const id = UTF8ToString(id_c);
+        const to = UTF8ToString(to_c);
+        fetch(base + "/buildings/" + encodeURIComponent(id) + "/deploy",
+              {
+                method : "POST",
+                headers : {"Content-Type" : "application/json"},
+                body : JSON.stringify({to : to})
+              })
+            .then(r => r.ok ? r.text() : r.text().then(t => Promise.reject(t)))
+            .then(t => {
+              window.imrmf._branch_result = {code : 'deployed', payload : t};
+            })
+            .catch(e => {
+              window.imrmf._branch_result = {code : 'err', payload : String(e)};
+            });
+      });
+
+EM_JS(void, imrmf_call_switch_branch, (const char *server_c, const char *to_c), {
+  if (!window.imrmf) return;
+  window.imrmf._result = {code : 'busy', payload : null};
+  let base = UTF8ToString(server_c) || window.location.origin;
+  while (base.length > 0 && base[base.length - 1] === '/')
+    base = base.substring(0, base.length - 1);
+  fetch(base + "/branch", {
+    method : "POST",
+    headers : {"Content-Type" : "application/json"},
+    body : JSON.stringify({to : UTF8ToString(to_c)})
+  })
+      .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+      .then(d => { window.imrmf._result = {code : 'ok', payload : d}; })
+      .catch(e => { window.imrmf._result = {code : 'err', payload : String(e)}; });
+});
+
+EM_JS(const char *, imrmf_branch_result_code, (), {
+  if (!window.imrmf || !window.imrmf._branch_result)
+    return stringToNewUTF8('idle');
+  return stringToNewUTF8(window.imrmf._branch_result.code || 'idle');
+});
+EM_JS(const char *, imrmf_branch_result_payload, (), {
+  if (!window.imrmf || !window.imrmf._branch_result)
+    return stringToNewUTF8("");
+  const p = window.imrmf._branch_result.payload;
+  return stringToNewUTF8(
+      p == null ? "" : (typeof p === 'string' ? p : JSON.stringify(p)));
+});
+EM_JS(void, imrmf_branch_reset_result, (), {
+  if (window.imrmf)
+    window.imrmf._branch_result = {code : 'idle', payload : null};
+});
+
 // clang-format on
 #else // !__EMSCRIPTEN__
 
@@ -404,6 +503,14 @@ const char *imrmf_snap_result_code() { return nullptr; }
 const char *imrmf_snap_result_payload() { return nullptr; }
 const char *imrmf_snap_result_dir() { return nullptr; }
 void imrmf_snap_reset_result() {}
+void imrmf_call_list_branches(const char *) {}
+void imrmf_call_deploy_snapshot(const char *, const char *, const char *,
+                                const char *) {}
+void imrmf_call_deploy_latest(const char *, const char *, const char *) {}
+void imrmf_call_switch_branch(const char *, const char *) {}
+const char *imrmf_branch_result_code() { return nullptr; }
+const char *imrmf_branch_result_payload() { return nullptr; }
+void imrmf_branch_reset_result() {}
 
 #endif
 
@@ -601,6 +708,86 @@ void poll_snapshot_result() {
     g_state.snapshot_status = "error: " + payload;
   }
   imrmf_snap_reset_result();
+#endif
+}
+
+void issue_branch_requests() {
+#ifdef __EMSCRIPTEN__
+  if (g_building_id.empty()) return;
+  if (g_state.branch_request_refresh) {
+    g_state.branch_request_refresh = false;
+    g_branches_dirty = true;
+  }
+  if (g_branches_dirty) {
+    g_branches_dirty = false;
+    imrmf_call_list_branches(g_server_url.c_str());
+  }
+  if (!g_state.deploy_request_to.empty() && !g_state.deploy_request_dir.empty()) {
+    std::string to = g_state.deploy_request_to;
+    std::string dir = g_state.deploy_request_dir;
+    g_state.deploy_request_to.clear();
+    g_state.deploy_request_dir.clear();
+    g_state.deploy_status = "deploying " + dir + " to " + to + "...";
+    imrmf_call_deploy_snapshot(g_server_url.c_str(), g_building_id.c_str(),
+                               dir.c_str(), to.c_str());
+  }
+  if (!g_state.deploy_latest_to.empty()) {
+    std::string to = g_state.deploy_latest_to;
+    g_state.deploy_latest_to.clear();
+    g_state.deploy_status = "deploying latest to " + to + "...";
+    imrmf_call_deploy_latest(g_server_url.c_str(), g_building_id.c_str(),
+                             to.c_str());
+  }
+  if (!g_state.branch_switch_to.empty()) {
+    std::string b = g_state.branch_switch_to;
+    g_state.branch_switch_to.clear();
+    if (b != g_state.branch) {
+      exit_snapshot_mode();
+      g_snapshots_dirty = true;
+      g_view.reset();
+      imrmf_call_disconnect(nullptr);
+      g_state.branch = b;
+      g_phase = ConnPhase::Mounting;
+      imrmf_reset_result();
+      imrmf_call_switch_branch(g_server_url.c_str(), b.c_str());
+    }
+  }
+#endif
+}
+
+void poll_branch_result() {
+#ifdef __EMSCRIPTEN__
+  const char *code_c = imrmf_branch_result_code();
+  if (!code_c) return;
+  std::string code(code_c);
+  std::free((void *)code_c);
+  if (code == "idle" || code == "busy") return;
+
+  const char *payload_c = imrmf_branch_result_payload();
+  std::string payload = payload_c ? payload_c : "";
+  if (payload_c) std::free((void *)payload_c);
+
+  if (code == "list") {
+    g_state.branches.clear();
+    try {
+      YAML::Node node = YAML::Load(payload);
+      if (node.IsMap()) {
+        YAML::Node arr = node["branches"];
+        if (arr && arr.IsSequence()) {
+          for (auto it : arr) {
+            std::string b = it.as<std::string>("");
+            if (!b.empty()) g_state.branches.push_back(std::move(b));
+          }
+        }
+      }
+    } catch (...) {
+    }
+  } else if (code == "deployed") {
+    g_state.deploy_status = payload.empty() ? "deployed" : payload;
+  } else if (code == "err") {
+    g_state.deploy_status = "error: " + payload;
+  }
+  imrmf_branch_reset_result();
 #endif
 }
 
@@ -918,6 +1105,7 @@ void poll_async_result() {
   }
   if (g_phase == ConnPhase::BootingConfig) {
     g_locked = json_bool_field(payload, "locked");
+    g_state.branch = json_string_field(payload, "branch");
     if (g_locked) {
       g_auto_building = json_string_field(payload, "auto_building");
       start_list_buildings();
@@ -976,6 +1164,8 @@ void disconnect_and_reset() {
   g_building_id.clear();
   g_buildings.clear();
   g_error_message.clear();
+  g_snapshots_dirty = true;
+  g_branches_dirty = true;
 }
 
 #endif // __EMSCRIPTEN__
@@ -1215,11 +1405,13 @@ void frame() {
   poll_async_result();
   poll_fs_result();
   poll_snapshot_result();
+  poll_branch_result();
 #endif
 
   if (g_phase == ConnPhase::Connected) {
     mirror_from_yjs();
     issue_snapshot_requests();
+    issue_branch_requests();
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);

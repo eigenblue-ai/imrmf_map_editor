@@ -70,6 +70,8 @@ struct Cli {
     s3_bucket: Option<String>,
     #[arg(long, env = "IMRMF_S3_PREFIX", default_value = "")]
     s3_prefix: String,
+    #[arg(long, env = "IMRMF_S3_BRANCH", default_value = "")]
+    s3_branch: String,
     #[arg(long, env = "IMRMF_S3_REGION", default_value = "us-east-1")]
     s3_region: String,
     #[arg(long, env = "IMRMF_S3_ENDPOINT")]
@@ -253,6 +255,7 @@ fn build_auto_mount_config(cli: &Cli) -> Result<MountConfig> {
             Ok(MountConfig::S3 {
                 bucket,
                 prefix: cli.s3_prefix.clone(),
+                branch: cli.s3_branch.clone(),
                 region: cli.s3_region.clone(),
                 access_key_id,
                 secret_access_key,

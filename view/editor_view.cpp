@@ -1476,7 +1476,9 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   draw_controls_overlay(canvas_, cctx);
 
   ImGui::SetCursorScreenPos(canvas_.canvas_pos());
-  ImGui::InvisibleButton("##canvas", canvas_.canvas_size());
+  ImGui::InvisibleButton("##canvas", canvas_.canvas_size(),
+                         ImGuiButtonFlags_MouseButtonLeft |
+                             ImGuiButtonFlags_MouseButtonMiddle);
   ImGuiIO &io = ImGui::GetIO();
   bool hovered = ImGui::IsItemHovered();
   ImVec2 mouse = io.MousePos;
@@ -1729,10 +1731,6 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     int midx = (vidx < 0 && lidx < 0 && widx < 0 && didx < 0)
                    ? hit_edge(mouse, level.measurements)
                    : -1;
-    int fidx =
-        (vidx < 0 && lidx < 0 && widx < 0 && didx < 0 && midx < 0)
-            ? hit_floor(mouse)
-            : -1;
 
     const bool shift = ImGui::GetIO().KeyShift;
     auto toggle_lane = [&](int li) {
@@ -1789,10 +1787,6 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
         state.selected_vertices.clear();
         state.selected_lanes.clear();
         state.selected_measurements = {midx};
-      } else if (fidx >= 0) {
-        state.selected_vertices.clear();
-        state.selected_lanes.clear();
-        state.selected_floor = fidx;
       } else {
         if (!shift) {
           state.selected_vertices.clear();
@@ -1997,6 +1991,13 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
         level.vertices.push_back(v);
         state.selected_vertices.clear();
         state.selected_vertices.push_back((int)level.vertices.size() - 1);
+      } else if (state.mode == Mode::Pan) {
+        // fall back to the floor only when the click selected nothing else
+        if (state.selected_vertices.empty() && state.selected_lanes.empty()) {
+          int fi = hit_floor(mouse);
+          if (fi >= 0)
+            state.selected_floor = fi;
+        }
       }
     }
     if (state.mode == Mode::Lane && !marquee_active_) {
@@ -3140,7 +3141,9 @@ void EditorView::draw_align_floors_canvas(Building &building,
   canvas::draw_level_selector_overlay(building, ignore_level, canvas_);
 
   ImGui::SetCursorScreenPos(canvas_.canvas_pos());
-  ImGui::InvisibleButton("##align_floors_canvas", canvas_.canvas_size());
+  ImGui::InvisibleButton("##align_floors_canvas", canvas_.canvas_size(),
+                         ImGuiButtonFlags_MouseButtonLeft |
+                             ImGuiButtonFlags_MouseButtonMiddle);
   bool hovered = ImGui::IsItemHovered();
   handle_floor_align_input(building, state, hovered);
 }
@@ -3402,6 +3405,80 @@ void EditorView::draw_version_strip(EditorState &state) {
   if (!state.snapshot_status.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", state.snapshot_status.c_str());
+  }
+
+  if (!state.branch.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("| branch");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::BeginCombo("##branch_combo", state.branch.c_str())) {
+      for (const auto &b : state.branches) {
+        bool sel = (b == state.branch);
+        if (ImGui::Selectable(b.c_str(), sel) && b != state.branch)
+          state.branch_switch_to = b;
+      }
+      ImGui::Separator();
+      if (ImGui::SmallButton("Refresh##branchlist"))
+        state.branch_request_refresh = true;
+      ImGui::EndCombo();
+    }
+  }
+
+  if (on_snapshot) {
+    ImGui::SameLine();
+    if (ImGui::Button("Deploy to..."))
+      ImGui::OpenPopup("##deploy_popup");
+    if (ImGui::BeginPopup("##deploy_popup")) {
+      ImGui::TextDisabled("Copy snapshot into branch:");
+      ImGui::Separator();
+      bool any = false;
+      for (const auto &b : state.branches) {
+        if (b == state.branch)
+          continue;
+        any = true;
+        if (ImGui::Selectable(b.c_str())) {
+          state.deploy_request_dir = state.snapshot_dir;
+          state.deploy_request_to = b;
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      if (!any)
+        ImGui::TextDisabled("(no other branches)");
+      ImGui::Separator();
+      if (ImGui::SmallButton("Refresh##branches"))
+        state.branch_request_refresh = true;
+      ImGui::EndPopup();
+    }
+  } else {
+    ImGui::SameLine();
+    if (ImGui::Button("Deploy latest to..."))
+      ImGui::OpenPopup("##deploy_latest_popup");
+    if (ImGui::BeginPopup("##deploy_latest_popup")) {
+      ImGui::TextDisabled("Copy latest map into branch:");
+      ImGui::Separator();
+      bool any = false;
+      for (const auto &b : state.branches) {
+        if (b == state.branch)
+          continue;
+        any = true;
+        if (ImGui::Selectable(b.c_str())) {
+          state.deploy_latest_to = b;
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      if (!any)
+        ImGui::TextDisabled("(no other branches)");
+      ImGui::Separator();
+      if (ImGui::SmallButton("Refresh##branches_latest"))
+        state.branch_request_refresh = true;
+      ImGui::EndPopup();
+    }
+  }
+
+  if (!state.deploy_status.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", state.deploy_status.c_str());
   }
   ImGui::EndChild();
   if (on_snapshot)

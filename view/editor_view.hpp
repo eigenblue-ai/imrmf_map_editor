@@ -129,6 +129,15 @@ struct EditorState {
   std::string snapshot_request_unload;
   std::string snapshot_request_restore;
   std::string snapshot_status;
+
+  std::string branch;
+  std::vector<std::string> branches;
+  bool branch_request_refresh = false;
+  std::string branch_switch_to;
+  std::string deploy_request_dir;
+  std::string deploy_request_to;
+  std::string deploy_latest_to;
+  std::string deploy_status;
 };
 
 struct TopBarHooks {

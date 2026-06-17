@@ -71,6 +71,13 @@ pub async fn run(
             "/buildings/:id/snapshots/:dir/restore",
             post(restore_snapshot_handler),
         )
+        .route(
+            "/buildings/:id/snapshots/:dir/deploy",
+            post(deploy_snapshot_handler),
+        )
+        .route("/buildings/:id/deploy", post(deploy_latest_handler))
+        .route("/branches", get(branches_list_handler))
+        .route("/branch", post(switch_branch_handler))
         .route("/snapshot_asset", get(snapshot_asset_handler))
         .route("/buildings/:id", get(building_get_handler).put(building_put_handler))
         .route(
@@ -138,10 +145,18 @@ struct RouteState {
 }
 
 async fn config_handler(State(rs): State<RouteState>) -> Response {
+    let branch = match rs.app.mount_status().await {
+        crate::state::MountStatus::Mounted {
+            info: crate::storage::MountInfo::S3 { branch, .. },
+            ..
+        } => branch,
+        _ => String::new(),
+    };
     let body = serde_json::json!({
         "locked": rs.app.is_locked(),
         "auto_building": rs.auto_building.as_ref().clone(),
         "backend": rs.backend_kind,
+        "branch": branch,
     });
     (StatusCode::OK, axum::Json(body)).into_response()
 }
@@ -497,6 +512,87 @@ async fn snapshot_asset_handler(
             .body(bytes.into())
             .unwrap(),
         Err(e) => (StatusCode::NOT_FOUND, format!("snapshot asset: {e:#}")).into_response(),
+    }
+}
+
+async fn switch_branch_handler(
+    State(rs): State<RouteState>,
+    axum::Json(body): axum::Json<DeployBody>,
+) -> Response {
+    if !id_safe(&body.to) {
+        return (StatusCode::BAD_REQUEST, "invalid branch").into_response();
+    }
+    match rs.app.switch_branch(&body.to, &rs.cache_root).await {
+        Ok(buildings) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "buildings": buildings })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("switch_branch: {e:#}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn branches_list_handler(State(rs): State<RouteState>) -> Response {
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.list_branches().await {
+        Ok(branches) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "branches": branches })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("branches: {e:#}")).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DeployBody {
+    to: String,
+}
+
+// In axum the Json body extractor must come last because it consumes the body.
+async fn deploy_snapshot_handler(
+    Path((id, dir)): Path<(String, String)>,
+    State(rs): State<RouteState>,
+    axum::Json(body): axum::Json<DeployBody>,
+) -> Response {
+    if !id_safe(&id) || !snap_dir_safe(&dir) {
+        return (StatusCode::BAD_REQUEST, "invalid id or dir").into_response();
+    }
+    if !id_safe(&body.to) {
+        return (StatusCode::BAD_REQUEST, "invalid target branch").into_response();
+    }
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.deploy_snapshot(&id, &dir, &body.to).await {
+        Ok(()) => (StatusCode::OK, format!("deployed {dir} -> {}", body.to)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy: {e:#}")).into_response(),
+    }
+}
+
+async fn deploy_latest_handler(
+    Path(id): Path<String>,
+    State(rs): State<RouteState>,
+    axum::Json(body): axum::Json<DeployBody>,
+) -> Response {
+    if !id_safe(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid id").into_response();
+    }
+    if !id_safe(&body.to) {
+        return (StatusCode::BAD_REQUEST, "invalid target branch").into_response();
+    }
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.deploy_latest(&id, &body.to).await {
+        Ok(()) => (StatusCode::OK, format!("deployed latest -> {}", body.to)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("deploy: {e:#}")).into_response(),
     }
 }
 

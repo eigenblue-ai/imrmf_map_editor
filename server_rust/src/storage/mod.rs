@@ -74,6 +74,16 @@ pub trait Storage: Send + Sync {
         dir: &str,
         path: &str,
     ) -> Result<Bytes>;
+
+    async fn list_branches(&self) -> Result<Vec<String>>;
+
+    /// Copies the snapshot into `dst_branch`'s snapshot list. The target's
+    /// active building is left alone, someone restores it there to go live.
+    async fn deploy_snapshot(&self, building_id: &str, dir: &str, dst_branch: &str) -> Result<()>;
+
+    /// Copies the mounted branch's live map (yaml + assets, no snapshots) onto
+    /// dst_branch's live map. Promotes the current state directly.
+    async fn deploy_latest(&self, building_id: &str, dst_branch: &str) -> Result<()>;
 }
 
 // dir is the on-disk/S3 folder ("<unix_secs>-<short_sha>"). Parsed back via
@@ -111,6 +121,7 @@ pub enum MountInfo {
     S3 {
         bucket: String,
         prefix: String,
+        branch: String,
         region: String,
     },
 }
@@ -128,6 +139,8 @@ pub enum MountConfig {
         bucket: String,
         #[serde(default)]
         prefix: String,
+        #[serde(default)]
+        branch: String,
         region: String,
         access_key_id: String,
         secret_access_key: String,

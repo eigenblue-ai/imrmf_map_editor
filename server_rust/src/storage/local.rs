@@ -281,4 +281,20 @@ impl Storage for LocalFsStorage {
         let resolved = self.check_inside_root(&p)?;
         Ok(Bytes::from(tokio::fs::read(&resolved).await?))
     }
+
+    async fn list_branches(&self) -> Result<Vec<String>> {
+        Ok(vec!["main".to_string()])
+    }
+
+    async fn deploy_snapshot(&self, _building_id: &str, _dir: &str, _dst_branch: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "deploy_snapshot is only supported on the S3 backend"
+        ))
+    }
+
+    async fn deploy_latest(&self, _building_id: &str, _dst_branch: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "deploy_latest is only supported on the S3 backend"
+        ))
+    }
 }
