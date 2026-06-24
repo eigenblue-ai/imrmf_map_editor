@@ -8,8 +8,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Json, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{DefaultBodyLimit, Json, Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::serve as axum_serve;
@@ -79,10 +79,16 @@ pub async fn run(
         .route("/branches", get(branches_list_handler))
         .route("/branch", post(switch_branch_handler))
         .route("/snapshot_asset", get(snapshot_asset_handler))
-        .route("/buildings/:id", get(building_get_handler).put(building_put_handler))
+        .route(
+            "/buildings/:id",
+            get(building_get_handler).put(building_put_handler),
+        )
+        // Raising the default max upload to 20 MB
         .route(
             "/layer_asset",
-            get(layer_asset_handler).put(layer_asset_put_handler),
+            get(layer_asset_handler)
+                .put(layer_asset_put_handler)
+                .layer(DefaultBodyLimit::max(20 * 1024 * 1024)),
         )
         .route("/validation_status", get(validation_status_handler))
         .route("/revert_to_last_valid", post(revert_handler))
@@ -255,10 +261,7 @@ async fn nav_graph_handler(
     }
 }
 
-async fn building_get_handler(
-    Path(id): Path<String>,
-    State(rs): State<RouteState>,
-) -> Response {
+async fn building_get_handler(Path(id): Path<String>, State(rs): State<RouteState>) -> Response {
     if !id_safe(&id) {
         return (StatusCode::BAD_REQUEST, "invalid id").into_response();
     }
@@ -369,6 +372,7 @@ struct LayerAssetQuery {
 }
 
 async fn layer_asset_handler(
+    headers: HeaderMap,
     Query(q): Query<LayerAssetQuery>,
     State(rs): State<RouteState>,
 ) -> Response {
@@ -378,14 +382,29 @@ async fn layer_asset_handler(
     let Some(storage) = rs.app.storage().await else {
         return (StatusCode::CONFLICT, "no backend mounted").into_response();
     };
+    let etag = storage.asset_etag(&q.id, &q.path).await.ok().flatten();
+    if let (Some(tag), Some(inm)) = (etag.as_ref(), headers.get(header::IF_NONE_MATCH)) {
+        if inm.to_str().map(|v| v == tag).unwrap_or(false) {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .header(header::ETAG, tag.clone())
+                .body(axum::body::Body::empty())
+                .unwrap();
+        }
+    }
     match storage.read_asset(&q.id, &q.path).await {
         Ok(bytes) => {
             let mime = mime_from_path(&q.path);
-            Response::builder()
+            let mut builder = Response::builder()
                 .header(header::CONTENT_TYPE, mime)
                 .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-                .body(bytes.into())
-                .unwrap()
+                .header(header::CACHE_CONTROL, "no-cache");
+            if let Some(tag) = etag {
+                builder = builder.header(header::ETAG, tag);
+            }
+            builder.body(bytes.into()).unwrap()
         }
         Err(e) => (StatusCode::NOT_FOUND, format!("asset: {e:#}")).into_response(),
     }
@@ -426,10 +445,7 @@ async fn revert_handler(State(rs): State<RouteState>) -> Response {
     }
 }
 
-async fn list_snapshots_handler(
-    Path(id): Path<String>,
-    State(rs): State<RouteState>,
-) -> Response {
+async fn list_snapshots_handler(Path(id): Path<String>, State(rs): State<RouteState>) -> Response {
     if !id_safe(&id) {
         return (StatusCode::BAD_REQUEST, "invalid id").into_response();
     }
@@ -443,16 +459,17 @@ async fn list_snapshots_handler(
     }
 }
 
-async fn create_snapshot_handler(
-    Path(id): Path<String>,
-    State(rs): State<RouteState>,
-) -> Response {
+async fn create_snapshot_handler(Path(id): Path<String>, State(rs): State<RouteState>) -> Response {
     if !id_safe(&id) {
         return (StatusCode::BAD_REQUEST, "invalid id").into_response();
     }
     match rs.app.create_snapshot(&id).await {
         Ok(snap) => (StatusCode::OK, axum::Json(snap)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("snapshot: {e:#}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("snapshot: {e:#}"),
+        )
+            .into_response(),
     }
 }
 
@@ -546,7 +563,11 @@ async fn branches_list_handler(State(rs): State<RouteState>) -> Response {
             axum::Json(serde_json::json!({ "branches": branches })),
         )
             .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("branches: {e:#}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("branches: {e:#}"),
+        )
+            .into_response(),
     }
 }
 

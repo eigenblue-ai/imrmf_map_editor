@@ -118,6 +118,9 @@ YAML::Node vertex_to_yaml(const Vertex &v) {
   n.push_back(v.name);
   YAML::Node params(YAML::NodeType::Map);
   for (const auto &[k, val] : v.params) {
+    if (val.type == ParamType::STRING && val.s.empty()) {
+      continue;
+    }
     params[k] = param_to_yaml(val);
   }
   n.push_back(params);

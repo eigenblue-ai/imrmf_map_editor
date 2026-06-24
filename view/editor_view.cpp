@@ -104,24 +104,24 @@ void init_default_wall_params(Wall &w) {
                           });
 }
 void init_default_door_params(Door &d) {
-  ensure_params(d.params,
-                {
-                    {"name", ParamValue::make_string("")},
-                    {"type", ParamValue::make_string("hinged")},
-                    {"motion_axis", ParamValue::make_string("start")},
-                    {"motion_degrees", ParamValue::make_double(90.0)},
-                    {"motion_direction", ParamValue::make_int(1)},
-                });
+  ensure_params(d.params, {
+                              {"name", ParamValue::make_string("")},
+                              {"type", ParamValue::make_string("hinged")},
+                              {"motion_axis", ParamValue::make_string("start")},
+                              {"motion_degrees", ParamValue::make_double(90.0)},
+                              {"motion_direction", ParamValue::make_int(1)},
+                          });
 }
 void init_default_measurement_params(Measurement &m) {
   ensure_params(m.params, {{"distance", ParamValue::make_double(1.0)}});
 }
 void init_default_floor_params(Floor &f) {
-  ensure_params(f.params, {
-                              {"texture_name", ParamValue::make_string("")},
-                              {"texture_rotation", ParamValue::make_double(0.0)},
-                              {"texture_scale", ParamValue::make_double(1.0)},
-                          });
+  ensure_params(f.params,
+                {
+                    {"texture_name", ParamValue::make_string("")},
+                    {"texture_rotation", ParamValue::make_double(0.0)},
+                    {"texture_scale", ParamValue::make_double(1.0)},
+                });
 }
 
 float dist_point_segment(float px, float py, float ax, float ay, float bx,
@@ -247,7 +247,8 @@ void mevjs_set_reference_level(const char *name);
 #endif
 
 void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_add(level.c_str(), y.c_str());
@@ -257,7 +258,8 @@ void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
 #endif
 }
 void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_replace(level.c_str(), idx, y.c_str());
@@ -268,7 +270,8 @@ void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
 #endif
 }
 void yjs_op_vertex_delete(const std::string &level, int idx) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   mevjs_vertex_delete(level.c_str(), idx);
 #else
@@ -277,7 +280,8 @@ void yjs_op_vertex_delete(const std::string &level, int idx) {
 #endif
 }
 void yjs_op_lane_add(const std::string &level, const Lane &l) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_add(level.c_str(), y.c_str());
@@ -287,7 +291,8 @@ void yjs_op_lane_add(const std::string &level, const Lane &l) {
 #endif
 }
 void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_replace(level.c_str(), idx, y.c_str());
@@ -298,7 +303,8 @@ void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
 #endif
 }
 void yjs_op_lane_delete(const std::string &level, int idx) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   mevjs_lane_delete(level.c_str(), idx);
 #else
@@ -315,20 +321,27 @@ void yjs_op_lane_delete(const std::string &level, int idx) {
 // generates the yjs_op_<name>_{add,replace,delete} wrappers
 #define IMRMF_GEOM_OPS(Type, name)                                             \
   void yjs_op_##name##_add(const std::string &lvl, const Type &e) {            \
-    if (g_readonly) return;                                                    \
-    (void)lvl; (void)e;                                                        \
+    if (g_readonly)                                                            \
+      return;                                                                  \
+    (void)lvl;                                                                 \
+    (void)e;                                                                   \
     IMRMF_BRIDGE(mevjs_##name##_add(lvl.c_str(), serialize_##name(e).c_str())) \
   }                                                                            \
-  void yjs_op_##name##_replace(const std::string &lvl, int idx,               \
-                               const Type &e) {                               \
-    if (g_readonly) return;                                                    \
-    (void)lvl; (void)idx; (void)e;                                            \
+  void yjs_op_##name##_replace(const std::string &lvl, int idx,                \
+                               const Type &e) {                                \
+    if (g_readonly)                                                            \
+      return;                                                                  \
+    (void)lvl;                                                                 \
+    (void)idx;                                                                 \
+    (void)e;                                                                   \
     IMRMF_BRIDGE(                                                              \
-        mevjs_##name##_replace(lvl.c_str(), idx, serialize_##name(e).c_str()))\
+        mevjs_##name##_replace(lvl.c_str(), idx, serialize_##name(e).c_str())) \
   }                                                                            \
-  void yjs_op_##name##_delete(const std::string &lvl, int idx) {              \
-    if (g_readonly) return;                                                    \
-    (void)lvl; (void)idx;                                                     \
+  void yjs_op_##name##_delete(const std::string &lvl, int idx) {               \
+    if (g_readonly)                                                            \
+      return;                                                                  \
+    (void)lvl;                                                                 \
+    (void)idx;                                                                 \
     IMRMF_BRIDGE(mevjs_##name##_delete(lvl.c_str(), idx))                      \
   }
 IMRMF_GEOM_OPS(Wall, wall)
@@ -338,7 +351,8 @@ IMRMF_GEOM_OPS(Floor, floor)
 #undef IMRMF_GEOM_OPS
 #undef IMRMF_BRIDGE
 void yjs_op_layer_set(const std::string &level, const Layer &L) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_layer(L);
   mevjs_layer_set(level.c_str(), L.name.c_str(), y.c_str());
@@ -348,7 +362,8 @@ void yjs_op_layer_set(const std::string &level, const Layer &L) {
 #endif
 }
 void yjs_op_layer_delete(const std::string &level, const std::string &name) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   mevjs_layer_delete(level.c_str(), name.c_str());
 #else
@@ -357,7 +372,8 @@ void yjs_op_layer_delete(const std::string &level, const std::string &name) {
 #endif
 }
 void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_add(level.c_str(), y.c_str());
@@ -368,7 +384,8 @@ void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
 }
 void yjs_op_fiducial_replace(const std::string &level, int idx,
                              const Fiducial &f) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_replace(level.c_str(), idx, y.c_str());
@@ -379,7 +396,8 @@ void yjs_op_fiducial_replace(const std::string &level, int idx,
 #endif
 }
 void yjs_op_fiducial_delete(const std::string &level, int idx) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   mevjs_fiducial_delete(level.c_str(), idx);
 #else
@@ -388,7 +406,8 @@ void yjs_op_fiducial_delete(const std::string &level, int idx) {
 #endif
 }
 void yjs_op_set_reference_level(const std::string &name) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   mevjs_set_reference_level(name.c_str());
 #else
@@ -398,7 +417,8 @@ void yjs_op_set_reference_level(const std::string &name) {
 
 void yjs_op_layer_reorder(const std::string &level,
                           const std::vector<std::string> &names) {
-  if (g_readonly) return;
+  if (g_readonly)
+    return;
 #ifdef __EMSCRIPTEN__
   // Emit a JSON array of layer names — JSON.parse on the JS side.
   std::string buf = "[";
@@ -520,7 +540,9 @@ void draw_orientation_combo(std::map<std::string, ParamValue> &params,
 void draw_param_editor(std::map<std::string, ParamValue> &params,
                        const char *key, ParamType type, bool &dirty,
                        bool &commit) {
-  auto &pv = params[key];
+  // Avoid params[key] seeding a default on render and persist only on edit.
+  auto it = params.find(key);
+  ParamValue pv = (it != params.end()) ? it->second : ParamValue{};
   if (pv.type != type) {
     pv.type = type;
     pv.s.clear();
@@ -528,6 +550,7 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     pv.d = 0.0;
     pv.b = false;
   }
+  bool edited = false;
   ImGui::PushID(key);
   switch (type) {
   case ParamType::BOOL: {
@@ -535,6 +558,7 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     if (ImGui::Checkbox(key, &v)) {
       pv.b = v;
       dirty = true;
+      edited = true;
       commit = true;
     }
     break;
@@ -544,6 +568,7 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     if (ImGui::InputText(key, &v)) {
       pv.s = std::move(v);
       dirty = true;
+      edited = true;
     }
     if (ImGui::IsItemDeactivatedAfterEdit())
       commit = true;
@@ -554,6 +579,7 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     if (ImGui::InputInt(key, &v)) {
       pv.i = v;
       dirty = true;
+      edited = true;
     }
     if (ImGui::IsItemDeactivatedAfterEdit())
       commit = true;
@@ -565,6 +591,7 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     if (ImGui::InputFloat(key, &fv, 0.0f, 0.0f, "%.4f")) {
       pv.d = (double)fv;
       dirty = true;
+      edited = true;
     }
     if (ImGui::IsItemDeactivatedAfterEdit())
       commit = true;
@@ -572,6 +599,8 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
   }
   }
   ImGui::PopID();
+  if (edited)
+    params[key] = pv;
 }
 
 // Bottom-right HUD listing whatever controls are active right now. Drawn to the
@@ -588,9 +617,11 @@ void draw_controls_overlay(const canvas::MapCanvas &c,
   float key_w = 0.0f, desc_w = 0.0f;
   for (const CanvasControl *ctl : controls) {
     key_w = std::max(key_w, ImGui::CalcTextSize(ctl->chord().c_str()).x);
-    desc_w = std::max(desc_w, ImGui::CalcTextSize(ctl->description().c_str()).x);
+    desc_w =
+        std::max(desc_w, ImGui::CalcTextSize(ctl->description().c_str()).x);
   }
-  float inner_w = std::max(ImGui::CalcTextSize(title.c_str()).x, key_w + gap + desc_w);
+  float inner_w =
+      std::max(ImGui::CalcTextSize(title.c_str()).x, key_w + gap + desc_w);
   float w = inner_w + pad * 2.0f;
   float h = pad * 2.0f + lh + 4.0f + lh * (float)controls.size();
 
@@ -599,13 +630,15 @@ void draw_controls_overlay(const canvas::MapCanvas &c,
   ImDrawList *dl = c.draw_list();
   dl->AddRectFilled(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(13, 13, 13, 200),
                     4.0f);
-  dl->AddRect(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(255, 255, 255, 35), 4.0f);
+  dl->AddRect(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(255, 255, 255, 35),
+              4.0f);
 
   float x = tl.x + pad, y = tl.y + pad;
   dl->AddText(ImVec2(x, y), IM_COL32(150, 190, 255, 255), title.c_str());
   y += lh + 4.0f;
   for (const CanvasControl *ctl : controls) {
-    dl->AddText(ImVec2(x, y), IM_COL32(235, 225, 120, 255), ctl->chord().c_str());
+    dl->AddText(ImVec2(x, y), IM_COL32(235, 225, 120, 255),
+                ctl->chord().c_str());
     dl->AddText(ImVec2(x + key_w + gap, y), IM_COL32(205, 205, 205, 255),
                 ctl->description().c_str());
     y += lh;
@@ -849,9 +882,9 @@ void EditorView::draw(Building &building, EditorState &state,
   {
     const float version_h = 32.0f;
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    ImGui::BeginChild("##canvas_box", ImVec2(avail.x, avail.y - version_h), false,
-                      ImGuiWindowFlags_NoScrollbar |
-                          ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::BeginChild(
+        "##canvas_box", ImVec2(avail.x, avail.y - version_h), false,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     draw_canvas(building, state);
     ImGui::EndChild();
     draw_version_strip(state);
@@ -868,7 +901,8 @@ void EditorView::draw(Building &building, EditorState &state,
     ImGui::Separator();
     ImGui::TextDisabled("View");
     ImGui::Checkbox("Show fiducials", &state.show_fiducials);
-    if (!state.show_fiducials) state.selected_fiducial_idx = -1;
+    if (!state.show_fiducials)
+      state.selected_fiducial_idx = -1;
     ImGui::Checkbox("Floors", &state.show_floors);
     ImGui::SameLine();
     ImGui::Checkbox("Walls", &state.show_walls);
@@ -1121,8 +1155,7 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
         state.pending_lane_start = -1;
         state.align_floors_sel_level = -1;
         state.align_floors_sel_idx = -1;
-        if (state.align_floors_target < 0 ||
-            state.align_floors_target == 0 ||
+        if (state.align_floors_target < 0 || state.align_floors_target == 0 ||
             state.align_floors_target >= (int)building.levels.size()) {
           state.align_floors_target = building.levels.size() >= 2 ? 1 : -1;
         }
@@ -1130,8 +1163,10 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
         for (const Level &lvl : building.levels) {
           for (const Fiducial &f : lvl.fiducials) {
             if (f.name.size() > 1 && f.name[0] == 'F') {
-              try { max_id = std::max(max_id, std::stoi(f.name.substr(1))); }
-              catch (...) {}
+              try {
+                max_id = std::max(max_id, std::stoi(f.name.substr(1)));
+              } catch (...) {
+              }
             }
           }
         }
@@ -1341,11 +1376,10 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
         int va = f.vertices[k], vb = f.vertices[(k + 1) % f.vertices.size()];
         if (!vok(va) || !vok(vb))
           continue;
-        gdl->AddLine(c.world_to_screen(level.vertices[va].x,
-                                       level.vertices[va].y),
-                     c.world_to_screen(level.vertices[vb].x,
-                                       level.vertices[vb].y),
-                     IM_COL32(255, 255, 255, 220), 2.5f);
+        gdl->AddLine(
+            c.world_to_screen(level.vertices[va].x, level.vertices[va].y),
+            c.world_to_screen(level.vertices[vb].x, level.vertices[vb].y),
+            IM_COL32(255, 255, 255, 220), 2.5f);
       }
     }
 
@@ -1370,22 +1404,21 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       for (size_t k = 0; k + 1 < state.pending_polygon.size(); ++k) {
         int va = state.pending_polygon[k], vb = state.pending_polygon[k + 1];
         if (vok(va) && vok(vb))
-          gdl->AddLine(c.world_to_screen(level.vertices[va].x,
-                                         level.vertices[va].y),
-                       c.world_to_screen(level.vertices[vb].x,
-                                         level.vertices[vb].y),
-                       IM_COL32(150, 220, 150, 200), 2.0f);
+          gdl->AddLine(
+              c.world_to_screen(level.vertices[va].x, level.vertices[va].y),
+              c.world_to_screen(level.vertices[vb].x, level.vertices[vb].y),
+              IM_COL32(150, 220, 150, 200), 2.0f);
       }
       int last = state.pending_polygon.back();
       if (vok(last))
-        gdl->AddLine(c.world_to_screen(level.vertices[last].x,
-                                       level.vertices[last].y),
-                     snapped_cursor(last), IM_COL32(150, 220, 150, 120), 2.0f);
+        gdl->AddLine(
+            c.world_to_screen(level.vertices[last].x, level.vertices[last].y),
+            snapped_cursor(last), IM_COL32(150, 220, 150, 120), 2.0f);
       int first = state.pending_polygon.front();
       if (vok(first))
-        gdl->AddCircle(c.world_to_screen(level.vertices[first].x,
-                                         level.vertices[first].y),
-                       9.5f, IM_COL32(80, 255, 120, 255), 0, 2.0f);
+        gdl->AddCircle(
+            c.world_to_screen(level.vertices[first].x, level.vertices[first].y),
+            9.5f, IM_COL32(80, 255, 120, 255), 0, 2.0f);
     }
     if (marquee_active_) {
       ImVec2 a = marquee_start_;
@@ -1506,7 +1539,10 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
         ImVec2 p = world_to_screen(level.fiducials[i].x, level.fiducials[i].y);
         float dx = m.x - p.x, dy = m.y - p.y;
         float d = std::sqrt(dx * dx + dy * dy);
-        if (d < best_d) { best_d = d; best = i; }
+        if (d < best_d) {
+          best_d = d;
+          best = i;
+        }
       }
       return best;
     };
@@ -1841,9 +1877,9 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       int vi = vidx;
       if (vi < 0) {
         Vertex nv;
-        auto [nx, ny] = snap_to_anchor(level, state.pending_edge_start,
-                                       s_drag_start_world_x,
-                                       s_drag_start_world_y, shift);
+        auto [nx, ny] =
+            snap_to_anchor(level, state.pending_edge_start,
+                           s_drag_start_world_x, s_drag_start_world_y, shift);
         nv.x = nx;
         nv.y = ny;
         yjs_op_vertex_add(level.name, nv);
@@ -1889,9 +1925,8 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       }
       int vi = vidx;
       if (vi < 0) {
-        int anchor = state.pending_polygon.empty()
-                         ? -1
-                         : state.pending_polygon.back();
+        int anchor =
+            state.pending_polygon.empty() ? -1 : state.pending_polygon.back();
         Vertex nv;
         auto [nx, ny] = snap_to_anchor(level, anchor, s_drag_start_world_x,
                                        s_drag_start_world_y, shift);
@@ -2077,10 +2112,9 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
           state.selected_vertices.clear();
         } else {
           Vertex v;
-          auto [vx, vy] = snap_to_anchor(level, state.pending_lane_start,
-                                         s_drag_start_world_x,
-                                         s_drag_start_world_y,
-                                         ImGui::GetIO().KeyShift);
+          auto [vx, vy] = snap_to_anchor(
+              level, state.pending_lane_start, s_drag_start_world_x,
+              s_drag_start_world_y, ImGui::GetIO().KeyShift);
           v.x = vx;
           v.y = vy;
           yjs_op_vertex_add(level.name, v);
@@ -2157,9 +2191,10 @@ void EditorView::draw_building_panel(Building &building, EditorState &state) {
   (void)state;
   ImGui::TextDisabled("Building");
   const std::string &cur = building.reference_level_name;
-  const char *preview = !cur.empty()        ? cur.c_str()
-                        : building.levels.empty() ? ""
-                                            : building.levels.front().name.c_str();
+  const char *preview = !cur.empty() ? cur.c_str()
+                        : building.levels.empty()
+                            ? ""
+                            : building.levels.front().name.c_str();
   ImGui::Text("Reference level");
   ImGui::SetNextItemWidth(-1);
   if (ImGui::BeginCombo("##reference_level", preview)) {
@@ -2213,8 +2248,8 @@ void EditorView::draw_layer_config_panel(Building &building,
       ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(60, 130, 60, 230));
       ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(70, 150, 70, 255));
     }
-    bool open = ImGui::CollapsingHeader(L.name.c_str(),
-                                        ImGuiTreeNodeFlags_DefaultOpen);
+    bool open =
+        ImGui::CollapsingHeader(L.name.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
     if (is_aligning)
       ImGui::PopStyleColor(3);
     if (!open) {
@@ -2871,7 +2906,6 @@ constexpr ImU32 kFidColorTgt = IM_COL32(255, 180, 80, 255);
 constexpr ImU32 kFidColorSel = IM_COL32(255, 255, 255, 255);
 constexpr float kFidHitPx = 9.0f;
 
-
 void draw_fid_marker(ImDrawList *dl, ImVec2 p, const char *name, ImU32 col,
                      bool selected) {
   const float r = selected ? 8.0f : 6.0f;
@@ -2890,7 +2924,6 @@ double default_target_scale(const Building &building, int tgt_idx) {
   return (mpp_ref > 0.0 && mpp_tgt > 0.0) ? (mpp_tgt / mpp_ref) : 1.0;
 }
 
-
 void render_align_image(const canvas::MapCanvas &c,
                         canvas::TextureProvider &provider,
                         const std::string &asset_id, const Level &lvl,
@@ -2901,15 +2934,20 @@ void render_align_image(const canvas::MapCanvas &c,
   double s_w = 0.0, cosL = 1.0, sinL = 0.0, lx = 0.0, ly = 0.0;
   int ow = 0, oh = 0;
   if (image_name.empty()) {
-    if (lvl.drawing_filename.empty()) return;
+    if (lvl.drawing_filename.empty())
+      return;
     tex = &provider.acquire("fp:" + lvl.name, asset_id, lvl.drawing_filename,
                             1.0, 1.0, 1.0);
     s_w = 1.0;
   } else {
     const Layer *L = nullptr;
     for (const Layer &q : lvl.layers)
-      if (q.name == image_name) { L = &q; break; }
-    if (!L) return;
+      if (q.name == image_name) {
+        L = &q;
+        break;
+      }
+    if (!L)
+      return;
     tex = &provider.acquire("lay:" + lvl.name + ":" + L->name, asset_id,
                             L->filename, L->color_r, L->color_g, L->color_b);
     s_w = L->scale / level_mpp;
@@ -2918,14 +2956,19 @@ void render_align_image(const canvas::MapCanvas &c,
     lx = L->translation_x / level_mpp;
     ly = L->translation_y / level_mpp;
   }
-  if (!tex || tex->status != canvas::LoadStatus::Ok) return;
+  if (!tex || tex->status != canvas::LoadStatus::Ok)
+    return;
   ow = tex->orig_width > 0 ? tex->orig_width : tex->width;
   oh = tex->orig_height > 0 ? tex->orig_height : tex->height;
   auto corner = [&](double ix, double iy) {
     double a = ix * s_w, b = iy * s_w;
     double wx = lx + cosL * a - sinL * b;
     double wy = ly + sinL * a + cosL * b;
-    if (xf) { auto p = tgt_to_ref(*xf, wx, wy); wx = p.first; wy = p.second; }
+    if (xf) {
+      auto p = tgt_to_ref(*xf, wx, wy);
+      wx = p.first;
+      wy = p.second;
+    }
     return c.world_to_screen(wx, wy);
   };
   dl->AddImageQuad((void *)(intptr_t)tex->id, corner(0.0, 0.0),
@@ -2975,7 +3018,8 @@ void EditorView::draw_align_floors_panel(Building &building,
   }
 
   int tgt = state.align_floors_target;
-  if (tgt <= 0 || tgt >= (int)building.levels.size()) tgt = 1;
+  if (tgt <= 0 || tgt >= (int)building.levels.size())
+    tgt = 1;
   ImGui::SetNextItemWidth(-1);
   if (ImGui::BeginCombo("##align_target", building.levels[tgt].name.c_str())) {
     for (int i = 1; i < (int)building.levels.size(); ++i) {
@@ -2989,7 +3033,8 @@ void EditorView::draw_align_floors_panel(Building &building,
           state.align_floors_tgt_mpp = compute_level_mpp(building, tgt);
         }
       }
-      if (sel) ImGui::SetItemDefaultFocus();
+      if (sel)
+        ImGui::SetItemDefaultFocus();
     }
     ImGui::EndCombo();
   }
@@ -3021,7 +3066,8 @@ void EditorView::draw_align_floors_panel(Building &building,
   if (xf.matched == 0)
     ImGui::TextDisabled("Place matching-named fiducials to align.");
   else if (xf.matched == 1)
-    ImGui::TextDisabled("translation only — scroll-zoom is a no-op until 2+ pairs");
+    ImGui::TextDisabled(
+        "translation only — scroll-zoom is a no-op until 2+ pairs");
   ImGui::TextDisabled("scale %.5f  yaw %.2f°  t (%.1f, %.1f)", xf.scale,
                       xf.yaw * 180.0 / M_PI, xf.tx, xf.ty);
 
@@ -3041,8 +3087,8 @@ void EditorView::draw_align_floors_panel(Building &building,
       ImGui::SameLine();
       bool sel = (state.align_floors_sel_level == level_idx &&
                   state.align_floors_sel_idx == i);
-      ImGui::TextColored(sel ? ImVec4(1, 1, 1, 1) : col,
-                         "%s  (%.0f, %.0f)", f.name.c_str(), f.x, f.y);
+      ImGui::TextColored(sel ? ImVec4(1, 1, 1, 1) : col, "%s  (%.0f, %.0f)",
+                         f.name.c_str(), f.x, f.y);
       ImGui::PopID();
     }
   };
@@ -3086,15 +3132,17 @@ void EditorView::draw_align_floors_canvas(Building &building,
   if (state.align_floors_ref_mpp <= 0.0)
     state.align_floors_ref_mpp = compute_level_mpp(building, 0);
   double ref_mpp = state.align_floors_ref_mpp;
-  if (ref_mpp <= 0.0) ref_mpp = 1.0;
+  if (ref_mpp <= 0.0)
+    ref_mpp = 1.0;
   double tgt_mpp = ref_mpp;
   if (has_target) {
-    xf = compute_floor_transform(
-        building.levels[0].fiducials, building.levels[tgt_idx].fiducials,
-        default_target_scale(building, tgt_idx));
+    xf = compute_floor_transform(building.levels[0].fiducials,
+                                 building.levels[tgt_idx].fiducials,
+                                 default_target_scale(building, tgt_idx));
     if (state.align_floors_tgt_mpp <= 0.0)
       state.align_floors_tgt_mpp = compute_level_mpp(building, tgt_idx);
-    if (state.align_floors_tgt_mpp > 0.0) tgt_mpp = state.align_floors_tgt_mpp;
+    if (state.align_floors_tgt_mpp > 0.0)
+      tgt_mpp = state.align_floors_tgt_mpp;
   }
 
   canvas::DrawOptions opts;
@@ -3103,8 +3151,8 @@ void EditorView::draw_align_floors_canvas(Building &building,
   opts.draw_layers = false;
   opts.draw_vertices = false;
   opts.draw_lanes = false;
-  opts.after_draw = [&, xf, tgt_mpp, ref_mpp, has_target](
-                       const canvas::MapCanvas &c) {
+  opts.after_draw = [&, xf, tgt_mpp, ref_mpp,
+                     has_target](const canvas::MapCanvas &c) {
     render_align_image(c, *texture_provider_, building_id_, building.levels[0],
                        state.align_floors_image, ref_mpp, nullptr,
                        IM_COL32(255, 255, 255, 255));
@@ -3150,9 +3198,11 @@ void EditorView::draw_align_floors_canvas(Building &building,
 
 void EditorView::handle_floor_align_input(Building &building,
                                           EditorState &state, bool hovered) {
-  if (!state.align_floors_mode) return;
+  if (!state.align_floors_mode)
+    return;
   const int tgt = state.align_floors_target;
-  if (tgt <= 0 || tgt >= (int)building.levels.size()) return;
+  if (tgt <= 0 || tgt >= (int)building.levels.size())
+    return;
   Level &ref = building.levels[0];
   Level &target = building.levels[tgt];
   ImGuiIO &io = ImGui::GetIO();
@@ -3167,11 +3217,13 @@ void EditorView::handle_floor_align_input(Building &building,
       ref.fiducials, target.fiducials, default_target_scale(building, tgt));
 
   auto canvas_to_floor = [&](int level, double cx, double cy) {
-    if (level == 0) return std::pair<double, double>{cx, cy};
+    if (level == 0)
+      return std::pair<double, double>{cx, cy};
     return ref_to_tgt(xf, cx, cy);
   };
   auto floor_to_canvas = [&](int level, double fx, double fy) {
-    if (level == 0) return std::pair<double, double>{fx, fy};
+    if (level == 0)
+      return std::pair<double, double>{fx, fy};
     return tgt_to_ref(xf, fx, fy);
   };
 
@@ -3179,18 +3231,21 @@ void EditorView::handle_floor_align_input(Building &building,
     state.align_floors_placing = false;
 
   static bool s_mpan = false;
-  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) s_mpan = true;
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+    s_mpan = true;
   if (s_mpan) {
     if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
       canvas_.view_state().offset_x += io.MouseDelta.x;
       canvas_.view_state().offset_y += io.MouseDelta.y;
-    } else s_mpan = false;
+    } else
+      s_mpan = false;
   }
 
   if (hovered && io.MouseWheel != 0.0f && !target.fiducials.empty() &&
       xf.scale > 1e-12) {
     double factor = 1.0 - (double)io.MouseWheel * 0.05;
-    if (factor < 0.1) factor = 0.1;
+    if (factor < 0.1)
+      factor = 0.1;
     auto [piv_w_x, piv_w_y] = canvas_.screen_to_world(mouse);
     // canvas -> target floorplan-px pivot through the full inverse chain.
     auto [piv_t_x, piv_t_y] = canvas_to_floor(tgt, piv_w_x, piv_w_y);
@@ -3203,20 +3258,30 @@ void EditorView::handle_floor_align_input(Building &building,
   }
 
   auto hit = [&](int &out_level, int &out_idx) {
-    out_level = -1; out_idx = -1;
+    out_level = -1;
+    out_idx = -1;
     float best = kFidHitPx;
     for (int i = 0; i < (int)ref.fiducials.size(); ++i) {
-      auto [wx, wy] = floor_to_canvas(0, ref.fiducials[i].x, ref.fiducials[i].y);
+      auto [wx, wy] =
+          floor_to_canvas(0, ref.fiducials[i].x, ref.fiducials[i].y);
       ImVec2 p = canvas_.world_to_screen(wx, wy);
       float d = std::hypot(p.x - mouse.x, p.y - mouse.y);
-      if (d < best) { best = d; out_level = 0; out_idx = i; }
+      if (d < best) {
+        best = d;
+        out_level = 0;
+        out_idx = i;
+      }
     }
     for (int i = 0; i < (int)target.fiducials.size(); ++i) {
-      auto [wx, wy] = floor_to_canvas(tgt, target.fiducials[i].x,
-                                      target.fiducials[i].y);
+      auto [wx, wy] =
+          floor_to_canvas(tgt, target.fiducials[i].x, target.fiducials[i].y);
       ImVec2 p = canvas_.world_to_screen(wx, wy);
       float d = std::hypot(p.x - mouse.x, p.y - mouse.y);
-      if (d < best) { best = d; out_level = tgt; out_idx = i; }
+      if (d < best) {
+        best = d;
+        out_level = tgt;
+        out_idx = i;
+      }
     }
   };
 
@@ -3235,8 +3300,12 @@ void EditorView::handle_floor_align_input(Building &building,
       auto [rfx, rfy] = canvas_to_floor(0, wx, wy);
       auto [tfx, tfy] = canvas_to_floor(tgt, wx, wy);
       Fiducial rf, tf;
-      rf.name = name; rf.x = rfx; rf.y = rfy;
-      tf.name = name; tf.x = tfx; tf.y = tfy;
+      rf.name = name;
+      rf.x = rfx;
+      rf.y = rfy;
+      tf.name = name;
+      tf.x = tfx;
+      tf.y = tfy;
       ref.fiducials.push_back(rf);
       yjs_op_fiducial_add(ref.name, rf);
       target.fiducials.push_back(tf);
@@ -3272,8 +3341,8 @@ void EditorView::handle_floor_align_input(Building &building,
         ref.fiducials[idx].x = fx;
         ref.fiducials[idx].y = fy;
         s_moved = true;
-      } else if (lvl == tgt && idx >= 0 &&
-                 idx < (int)target.fiducials.size() && xf.scale > 1e-12) {
+      } else if (lvl == tgt && idx >= 0 && idx < (int)target.fiducials.size() &&
+                 xf.scale > 1e-12) {
         target.fiducials[idx].x = fx;
         target.fiducials[idx].y = fy;
         s_moved = true;
@@ -3292,7 +3361,10 @@ void EditorView::handle_floor_align_input(Building &building,
       auto [f_old_x, f_old_y] = canvas_to_floor(tgt, w_old_x, w_old_y);
       double dix = f_new_x - f_old_x;
       double diy = f_new_y - f_old_y;
-      for (Fiducial &f : target.fiducials) { f.x -= dix; f.y -= diy; }
+      for (Fiducial &f : target.fiducials) {
+        f.x -= dix;
+        f.y -= diy;
+      }
       s_moved = true;
     }
   }
@@ -3337,13 +3409,13 @@ void EditorView::draw_version_strip(EditorState &state) {
                     ImGuiWindowFlags_NoScrollbar);
   ImGui::AlignTextToFramePadding();
   if (on_snapshot)
-    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
-                       "Read-only snapshot:");
+    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "Read-only snapshot:");
   else
     ImGui::TextUnformatted("Version:");
   ImGui::SameLine();
 
-  std::string preview = on_snapshot ? state.snapshot_dir : std::string("latest");
+  std::string preview =
+      on_snapshot ? state.snapshot_dir : std::string("latest");
   ImGui::SetNextItemWidth(220.0f);
   if (ImGui::BeginCombo("##version_combo", preview.c_str())) {
     if (ImGui::Selectable("latest", !on_snapshot))
@@ -3357,10 +3429,9 @@ void EditorView::draw_version_strip(EditorState &state) {
 #else
       gmtime_r(&t, &tm_utc);
 #endif
-      std::snprintf(label, sizeof(label),
-                    "%s  %04d-%02d-%02d %02d:%02d", s.sha.c_str(),
-                    tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
-                    tm_utc.tm_hour, tm_utc.tm_min);
+      std::snprintf(label, sizeof(label), "%s  %04d-%02d-%02d %02d:%02d",
+                    s.sha.c_str(), tm_utc.tm_year + 1900, tm_utc.tm_mon + 1,
+                    tm_utc.tm_mday, tm_utc.tm_hour, tm_utc.tm_min);
       bool sel = (s.dir == state.snapshot_dir);
       if (ImGui::Selectable(label, sel))
         state.snapshot_request_load = s.dir;

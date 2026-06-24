@@ -96,11 +96,17 @@ impl S3Storage {
     }
 
     fn asset_key(&self, building_id: &str, path: &str) -> String {
-        join_key(&self.branch_root(&self.branch), &format!("{building_id}/{path}"))
+        join_key(
+            &self.branch_root(&self.branch),
+            &format!("{building_id}/{path}"),
+        )
     }
 
     fn snapshots_prefix(&self, building_id: &str) -> String {
-        join_key(&self.branch_root(&self.branch), &format!("{building_id}/snapshots/"))
+        join_key(
+            &self.branch_root(&self.branch),
+            &format!("{building_id}/snapshots/"),
+        )
     }
 
     fn snapshot_yaml_key(&self, building_id: &str, dir: &str) -> String {
@@ -146,8 +152,10 @@ impl Storage for S3Storage {
                 continue;
             }
             // Only list folders that are actual buildings
-            let yaml_key =
-                join_key(&self.branch_root(&self.branch), &format!("{dir}/{dir}.building.yaml"));
+            let yaml_key = join_key(
+                &self.branch_root(&self.branch),
+                &format!("{dir}/{dir}.building.yaml"),
+            );
             if self
                 .client
                 .head_object()
@@ -222,6 +230,19 @@ impl Storage for S3Storage {
         Ok(bytes)
     }
 
+    async fn asset_etag(&self, building_id: &str, path: &str) -> Result<Option<String>> {
+        let key = self.asset_key(building_id, path);
+        let resp = self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .with_context(|| format!("s3 head {}", key))?;
+        Ok(resp.e_tag().map(|s| s.to_string()))
+    }
+
     async fn write_asset(&self, building_id: &str, path: &str, bytes: Bytes) -> Result<()> {
         let key = self.asset_key(building_id, path);
         self.client
@@ -283,7 +304,10 @@ impl Storage for S3Storage {
         let mut out = Vec::new();
         for cp in resp.common_prefixes() {
             let Some(p) = cp.prefix() else { continue };
-            let dir = p.strip_prefix(&snap_prefix).unwrap_or(p).trim_end_matches('/');
+            let dir = p
+                .strip_prefix(&snap_prefix)
+                .unwrap_or(p)
+                .trim_end_matches('/');
             if let Some(info) = SnapshotInfo::parse_dir(dir) {
                 out.push(info);
             }
@@ -337,12 +361,7 @@ impl Storage for S3Storage {
         String::from_utf8(bytes.to_vec()).with_context(|| format!("yaml not utf-8: {}", key))
     }
 
-    async fn read_snapshot_asset(
-        &self,
-        building_id: &str,
-        dir: &str,
-        path: &str,
-    ) -> Result<Bytes> {
+    async fn read_snapshot_asset(&self, building_id: &str, dir: &str, path: &str) -> Result<Bytes> {
         let key = self.snapshot_asset_key(building_id, dir, path);
         let resp = self
             .client
@@ -369,7 +388,10 @@ impl Storage for S3Storage {
         let mut out = Vec::new();
         for cp in resp.common_prefixes() {
             let Some(p) = cp.prefix() else { continue };
-            let b = p.strip_prefix(&list_prefix).unwrap_or(p).trim_end_matches('/');
+            let b = p
+                .strip_prefix(&list_prefix)
+                .unwrap_or(p)
+                .trim_end_matches('/');
             if !b.is_empty() {
                 out.push(b.to_string());
             }
@@ -431,7 +453,10 @@ impl Storage for S3Storage {
 
     async fn deploy_latest(&self, building_id: &str, dst_branch: &str) -> Result<()> {
         let dst_branch = sanitize_branch(dst_branch);
-        let src_prefix = format!("{}/", join_key(&self.branch_root(&self.branch), building_id));
+        let src_prefix = format!(
+            "{}/",
+            join_key(&self.branch_root(&self.branch), building_id)
+        );
         let dst_prefix = format!("{}/", join_key(&self.branch_root(&dst_branch), building_id));
         let mut token: Option<String> = None;
         let mut copied = 0usize;
@@ -490,7 +515,13 @@ fn sanitize_branch(s: &str) -> String {
         return "main".to_string();
     }
     b.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

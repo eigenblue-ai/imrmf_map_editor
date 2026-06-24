@@ -41,6 +41,11 @@ pub trait Storage: Send + Sync {
     /// Write a layer asset. Used by PUT /layer_asset (e.g. TopView captures).
     async fn write_asset(&self, building_id: &str, path: &str, bytes: Bytes) -> Result<()>;
 
+    /// ETag for an asset, for conditional GET. None disables revalidation.
+    async fn asset_etag(&self, _building_id: &str, _path: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Make an asset available on the local filesystem alongside the cached
     /// yaml so the ROS2 building_map_server can `open()` it. For LocalFs the
     /// file already IS on disk; default impl is no-op. S3 overrides to mirror.
@@ -68,12 +73,7 @@ pub trait Storage: Send + Sync {
 
     async fn read_snapshot_yaml(&self, building_id: &str, dir: &str) -> Result<String>;
 
-    async fn read_snapshot_asset(
-        &self,
-        building_id: &str,
-        dir: &str,
-        path: &str,
-    ) -> Result<Bytes>;
+    async fn read_snapshot_asset(&self, building_id: &str, dir: &str, path: &str) -> Result<Bytes>;
 
     async fn list_branches(&self) -> Result<Vec<String>>;
 
