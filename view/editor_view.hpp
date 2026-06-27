@@ -115,6 +115,10 @@ struct EditorState {
   bool show_doors = true;
   bool show_measurements = true;
 
+  std::string active_mutex_group; // selected group, highlighted on canvas
+  std::string mutex_rename_buf;   // rename input
+  std::string mutex_new_buf;      // new-group input
+
   struct SnapshotEntry {
     std::string dir;
     std::string sha;
@@ -176,6 +180,7 @@ private:
   void draw_add_layer_section(Building &building, EditorState &state);
   void draw_layer_config_panel(Building &building, EditorState &state);
   void draw_attribute_panel(Building &building, EditorState &state);
+  void draw_mutex_groups_panel(Building &building, EditorState &state);
   void draw_status_bar(const EditorState &state);
 
   // Direct-map align mode for a single layer. Ctrl = fine/zoom-independent.

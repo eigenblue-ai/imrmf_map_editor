@@ -64,6 +64,7 @@ struct LayerSession {
 
 ImU32 vertex_color(const Vertex &v);
 ImU32 lane_color(const Lane &l);
+ImU32 mutex_color(const std::string &group);
 bool is_bidirectional(const Lane &l);
 
 class MapCanvas;
@@ -78,6 +79,7 @@ struct DrawOptions {
   bool draw_measurements = true;
   bool draw_vertices = true;
   bool show_vertex_names = true;
+  std::string highlight_mutex; // members of this group pop, others dim
   const std::unordered_map<std::string, FloorplanSession> *floorplan_sessions =
       nullptr;
   const std::unordered_map<std::string, LayerSession> *layer_sessions = nullptr;

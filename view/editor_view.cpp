@@ -537,6 +537,68 @@ void draw_orientation_combo(std::map<std::string, ParamValue> &params,
   ImGui::PopID();
 }
 
+std::string get_mutex(const std::map<std::string, ParamValue> &p) {
+  auto it = p.find("mutex");
+  if (it != p.end() && it->second.type == ParamType::STRING)
+    return it->second.s;
+  return "";
+}
+
+struct MutexGroupInfo {
+  std::string name;
+  int lanes = 0;
+  int vertices = 0;
+};
+
+std::vector<MutexGroupInfo> gather_mutex_groups(const Level &level) {
+  std::map<std::string, MutexGroupInfo> m;
+  for (const auto &l : level.lanes) {
+    std::string s = get_mutex(l.params);
+    if (!s.empty())
+      m[s].lanes++;
+  }
+  for (const auto &v : level.vertices) {
+    std::string s = get_mutex(v.params);
+    if (!s.empty())
+      m[s].vertices++;
+  }
+  std::vector<MutexGroupInfo> out;
+  out.reserve(m.size());
+  for (auto &[k, info] : m) {
+    info.name = k;
+    out.push_back(info);
+  }
+  return out;
+}
+
+void draw_mutex_combo(std::map<std::string, ParamValue> &params,
+                      const std::vector<MutexGroupInfo> &groups, bool &dirty,
+                      bool &commit) {
+  std::string cur = get_mutex(params);
+  ImGui::PushID("mutex");
+  if (ImGui::BeginCombo("mutex", cur.empty() ? "(none)" : cur.c_str())) {
+    if (ImGui::Selectable("(none)", cur.empty())) {
+      params["mutex"] = ParamValue::make_string("");
+      dirty = commit = true;
+    }
+    for (const auto &g : groups) {
+      if (ImGui::Selectable(g.name.c_str(), g.name == cur)) {
+        params["mutex"] = ParamValue::make_string(g.name);
+        dirty = commit = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  std::string nv = cur;
+  if (ImGui::InputTextWithHint("##mutex_new", "type a new group", &nv)) {
+    params["mutex"] = ParamValue::make_string(nv);
+    dirty = true;
+  }
+  if (ImGui::IsItemDeactivatedAfterEdit())
+    commit = true;
+  ImGui::PopID();
+}
+
 void draw_param_editor(std::map<std::string, ParamValue> &params,
                        const char *key, ParamType type, bool &dirty,
                        bool &commit) {
@@ -909,6 +971,8 @@ void EditorView::draw(Building &building, EditorState &state,
     ImGui::Checkbox("Doors", &state.show_doors);
     ImGui::SameLine();
     ImGui::Checkbox("Measurements", &state.show_measurements);
+    ImGui::Separator();
+    draw_mutex_groups_panel(building, state);
     ImGui::Separator();
     draw_add_layer_section(building, state);
     ImGui::Separator();
@@ -1323,6 +1387,7 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   opts.draw_walls = state.show_walls;
   opts.draw_doors = state.show_doors;
   opts.draw_measurements = state.show_measurements;
+  opts.highlight_mutex = state.active_mutex_group;
   opts.after_draw = [&](const canvas::MapCanvas &c) {
     for (int li : state.selected_lanes) {
       if (li < 0 || li >= (int)level.lanes.size())
@@ -2452,8 +2517,106 @@ void EditorView::handle_align_input(Building &building, EditorState &state,
   }
 }
 
+void EditorView::draw_mutex_groups_panel(Building &building,
+                                         EditorState &state) {
+  if (!ImGui::CollapsingHeader("Mutex Groups"))
+    return;
+  Level &level = building.levels[state.level_idx];
+  std::vector<MutexGroupInfo> groups = gather_mutex_groups(level);
+
+  auto set_on_selection = [&](const std::string &grp) {
+    for (int li : state.selected_lanes)
+      if (li >= 0 && li < (int)level.lanes.size()) {
+        level.lanes[li].params["mutex"] = ParamValue::make_string(grp);
+        yjs_op_lane_replace(level.name, li, level.lanes[li]);
+      }
+    for (int vi : state.selected_vertices)
+      if (vi >= 0 && vi < (int)level.vertices.size()) {
+        level.vertices[vi].params["mutex"] = ParamValue::make_string(grp);
+        yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
+      }
+  };
+  auto retag_group = [&](const std::string &from, const std::string &to) {
+    for (int i = 0; i < (int)level.lanes.size(); ++i)
+      if (get_mutex(level.lanes[i].params) == from) {
+        level.lanes[i].params["mutex"] = ParamValue::make_string(to);
+        yjs_op_lane_replace(level.name, i, level.lanes[i]);
+      }
+    for (int i = 0; i < (int)level.vertices.size(); ++i)
+      if (get_mutex(level.vertices[i].params) == from) {
+        level.vertices[i].params["mutex"] = ParamValue::make_string(to);
+        yjs_op_vertex_replace(level.name, i, level.vertices[i]);
+      }
+  };
+
+  ImGui::TextDisabled("Click a group to highlight its members.");
+  if (groups.empty())
+    ImGui::TextDisabled("No mutex groups yet.");
+  for (const auto &g : groups) {
+    ImGui::PushID(g.name.c_str());
+    ImGui::ColorButton("##sw", ImColor(canvas::mutex_color(g.name)),
+                       ImGuiColorEditFlags_NoTooltip |
+                           ImGuiColorEditFlags_NoPicker,
+                       ImVec2(12, 12));
+    ImGui::SameLine();
+    std::string label = g.name + "  (" + std::to_string(g.lanes) + " lanes, " +
+                        std::to_string(g.vertices) + " verts)";
+    if (ImGui::Selectable(label.c_str(), state.active_mutex_group == g.name))
+      state.active_mutex_group =
+          (state.active_mutex_group == g.name) ? "" : g.name;
+    ImGui::PopID();
+  }
+  if (!state.active_mutex_group.empty() && ImGui::SmallButton("Clear highlight"))
+    state.active_mutex_group.clear();
+
+  const int nl = (int)state.selected_lanes.size();
+  const int nv = (int)state.selected_vertices.size();
+
+  if (!state.active_mutex_group.empty()) {
+    const std::string g = state.active_mutex_group;
+    ImGui::Separator();
+    ImGui::Text("Group \"%s\"", g.c_str());
+    ImGui::TextDisabled("Canvas selection: %d lanes, %d verts", nl, nv);
+    ImGui::BeginDisabled(nl + nv == 0);
+    if (ImGui::Button("Add selected to this group"))
+      set_on_selection(g);
+    if (ImGui::Button("Remove selected from any group"))
+      set_on_selection("");
+    ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(140);
+    ImGui::InputTextWithHint("##rename", "rename to", &state.mutex_rename_buf);
+    ImGui::SameLine();
+    if (ImGui::Button("Rename group") && !state.mutex_rename_buf.empty() &&
+        state.mutex_rename_buf != g) {
+      retag_group(g, state.mutex_rename_buf);
+      state.active_mutex_group = state.mutex_rename_buf;
+      state.mutex_rename_buf.clear();
+    }
+    if (ImGui::Button("Delete group (clear all members)")) {
+      retag_group(g, "");
+      state.active_mutex_group.clear();
+    }
+  }
+
+  ImGui::Separator();
+  ImGui::BeginDisabled(nl + nv == 0);
+  ImGui::SetNextItemWidth(140);
+  ImGui::InputTextWithHint("##newgroup", "new group name",
+                           &state.mutex_new_buf);
+  ImGui::SameLine();
+  if (ImGui::Button("Create from selection") && !state.mutex_new_buf.empty()) {
+    set_on_selection(state.mutex_new_buf);
+    state.active_mutex_group = state.mutex_new_buf;
+    state.mutex_new_buf.clear();
+  }
+  ImGui::EndDisabled();
+  if (nl + nv == 0)
+    ImGui::TextDisabled("Select lanes/vertices on the canvas to assign them.");
+}
+
 void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
   Level &level = building.levels[state.level_idx];
+  const std::vector<MutexGroupInfo> mutex_groups = gather_mutex_groups(level);
 
   bool is_layer_branch = (state.selected_layer >= 0 &&
                           state.selected_layer < (int)level.layers.size());
@@ -2599,8 +2762,11 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     ImGui::Separator();
     ImGui::TextDisabled("Attributes");
     for (const auto &spec : kVertexParams) {
+      if (std::strcmp(spec.key, "mutex") == 0)
+        continue;
       draw_param_editor(v.params, spec.key, spec.type, v_dirty, v_commit);
     }
+    draw_mutex_combo(v.params, mutex_groups, v_dirty, v_commit);
     if (v_dirty) {
       state.pending_commit_vertex = vi;
       state.pending_commit_time = ImGui::GetTime();
@@ -2622,11 +2788,13 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     init_default_lane_params(l);
     bool ln_dirty = false, ln_commit = false;
     for (const auto &spec : kLaneParams) {
-      if (std::strcmp(spec.key, "orientation") == 0)
+      if (std::strcmp(spec.key, "orientation") == 0 ||
+          std::strcmp(spec.key, "mutex") == 0)
         continue;
       draw_param_editor(l.params, spec.key, spec.type, ln_dirty, ln_commit);
     }
     draw_orientation_combo(l.params, ln_dirty, ln_commit);
+    draw_mutex_combo(l.params, mutex_groups, ln_dirty, ln_commit);
     if (ln_dirty) {
       state.pending_commit_lane = single_lane;
       state.pending_commit_time = ImGui::GetTime();

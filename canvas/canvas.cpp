@@ -55,6 +55,21 @@ ImU32 lane_color(const Lane &l) {
   return palette[((g % 5) + 5) % 5];
 }
 
+ImU32 mutex_color(const std::string &group) {
+  uint32_t h = 2166136261u; // FNV-1a, stable per name
+  for (unsigned char c : group) {
+    h ^= c;
+    h *= 16777619u;
+  }
+  static const ImU32 palette[] = {
+      IM_COL32(232, 104, 104, 235), IM_COL32(104, 168, 232, 235),
+      IM_COL32(120, 214, 132, 235), IM_COL32(214, 140, 222, 235),
+      IM_COL32(230, 196, 96, 235),  IM_COL32(108, 214, 214, 235),
+      IM_COL32(232, 156, 96, 235),  IM_COL32(168, 152, 232, 235),
+  };
+  return palette[h % (sizeof(palette) / sizeof(palette[0]))];
+}
+
 bool is_bidirectional(const Lane &l) {
   auto it = l.params.find("bidirectional");
   if (it == l.params.end() || it->second.type != ParamType::BOOL)
@@ -63,6 +78,13 @@ bool is_bidirectional(const Lane &l) {
 }
 
 namespace {
+
+std::string mutex_of(const std::map<std::string, ParamValue> &p) {
+  auto it = p.find("mutex");
+  if (it != p.end() && it->second.type == ParamType::STRING)
+    return it->second.s;
+  return "";
+}
 
 // 0 = unconstrained, +1 = forward (start->end), -1 = backward.
 int lane_orientation_sign(const Lane &l) {
@@ -444,7 +466,16 @@ void MapCanvas::draw(const Building &building, int level_idx,
       ImVec2 b = world_to_screen(level.vertices[l.end_idx].x,
                                  level.vertices[l.end_idx].y);
       ImU32 col = lane_color(l);
-      draw_list_->AddLine(a, b, col, 2.0f);
+      float thick = 2.0f;
+      if (!opts.highlight_mutex.empty()) {
+        if (mutex_of(l.params) == opts.highlight_mutex) {
+          col = mutex_color(opts.highlight_mutex);
+          thick = 4.0f;
+        } else {
+          col = IM_COL32(80, 80, 80, 120);
+        }
+      }
+      draw_list_->AddLine(a, b, col, thick);
       ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
       float dx = b.x - a.x, dy = b.y - a.y;
       float len = std::sqrt(dx * dx + dy * dy);
@@ -549,7 +580,17 @@ void MapCanvas::draw(const Building &building, int level_idx,
   if (opts.draw_vertices) {
     for (const Vertex &v : level.vertices) {
       ImVec2 p = world_to_screen(v.x, v.y);
-      draw_list_->AddCircleFilled(p, 4.5f, vertex_color(v));
+      ImU32 vc = vertex_color(v);
+      float vr = 4.5f;
+      if (!opts.highlight_mutex.empty()) {
+        if (mutex_of(v.params) == opts.highlight_mutex) {
+          vc = mutex_color(opts.highlight_mutex);
+          vr = 6.5f;
+        } else {
+          vc = IM_COL32(80, 80, 80, 140);
+        }
+      }
+      draw_list_->AddCircleFilled(p, vr, vc);
       if (opts.show_vertex_names && !v.name.empty()) {
         draw_list_->AddText(ImVec2(p.x + 6.0f, p.y - 8.0f),
                             IM_COL32(220, 220, 220, 255), v.name.c_str());
