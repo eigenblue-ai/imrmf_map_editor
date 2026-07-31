@@ -6,6 +6,10 @@
 
 #include "imgui/imgui.h"
 #include "imgui/misc/cpp/imgui_stdlib.h"
+
+#include "egb_imgui/icons.hpp"
+#include "egb_imgui/widgets.hpp"
+
 #include "model/yaml_io.hpp"
 #include "view/canvas_controls.hpp"
 
@@ -30,9 +34,12 @@ namespace {
 constexpr float kHitRadiusPx = 8.0f;
 constexpr float kLaneHitPx = 6.0f;
 
+// optional: numeric that may be absent. Absent = unset, not 0. See
+// param_optional().
 struct VertexParamSpec {
   const char *key;
   ParamType type;
+  bool optional = false;
 };
 const std::array<VertexParamSpec, 13> kVertexParams = {{
     {"is_charger", ParamType::BOOL},
@@ -47,22 +54,35 @@ const std::array<VertexParamSpec, 13> kVertexParams = {{
     {"spawn_robot_name", ParamType::STRING},
     {"human_goal_set_name", ParamType::STRING},
     {"mutex", ParamType::STRING},
-    {"merge_radius", ParamType::DOUBLE},
+    {"merge_radius", ParamType::DOUBLE, true},
 }};
 
 struct LaneParamSpec {
   const char *key;
   ParamType type;
+  bool optional = false;
 };
 const std::array<LaneParamSpec, 7> kLaneParams = {{
     {"bidirectional", ParamType::BOOL},
     {"orientation", ParamType::STRING},
-    {"graph_idx", ParamType::INT},
-    {"speed_limit", ParamType::DOUBLE},
+    {"graph_idx", ParamType::INT, true},
+    {"speed_limit", ParamType::DOUBLE, true},
     {"mutex", ParamType::STRING},
     {"demo_mock_floor_name", ParamType::STRING},
     {"demo_mock_lift_name", ParamType::STRING},
 }};
+
+// Is a param optional (absent == unset)? Both editors consult this, so no call
+// site can write 0 for an unset field.
+inline bool param_optional(const char *key) {
+  for (const auto &s : kVertexParams)
+    if (std::strcmp(s.key, key) == 0)
+      return s.optional;
+  for (const auto &s : kLaneParams)
+    if (std::strcmp(s.key, key) == 0)
+      return s.optional;
+  return false;
+}
 
 struct ParamSpec {
   const char *key;
@@ -243,7 +263,21 @@ void mevjs_fiducial_add(const char *level, const char *yaml);
 void mevjs_fiducial_replace(const char *level, int idx, const char *yaml);
 void mevjs_fiducial_delete(const char *level, int idx);
 void mevjs_set_reference_level(const char *name);
+void mevjs_drawing_set(const char *level, const char *filename);
+void mev_assets_list(const char *id, const char *subdir);
+const char *mev_assets_code();
+const char *mev_assets_payload();
+void mev_asset_upload(const char *id, const char *dir);
+const char *mev_asset_up_code();
+const char *mev_asset_up_name();
 }
+#else
+static inline void mev_assets_list(const char *, const char *) {}
+static inline const char *mev_assets_code() { return "idle"; }
+static inline const char *mev_assets_payload() { return ""; }
+static inline void mev_asset_upload(const char *, const char *) {}
+static inline const char *mev_asset_up_code() { return "idle"; }
+static inline const char *mev_asset_up_name() { return ""; }
 #endif
 
 void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
@@ -415,6 +449,17 @@ void yjs_op_set_reference_level(const std::string &name) {
 #endif
 }
 
+void yjs_op_drawing_set(const std::string &level, const std::string &filename) {
+  if (g_readonly)
+    return;
+#ifdef __EMSCRIPTEN__
+  mevjs_drawing_set(level.c_str(), filename.c_str());
+#else
+  (void)level;
+  (void)filename;
+#endif
+}
+
 void yjs_op_layer_reorder(const std::string &level,
                           const std::vector<std::string> &names) {
   if (g_readonly)
@@ -488,8 +533,7 @@ void init_default_lane_params(Lane &l) {
   };
   need("bidirectional", ParamValue::make_bool(true));
   need("orientation", ParamValue::make_string(""));
-  need("graph_idx", ParamValue::make_int(0));
-  need("speed_limit", ParamValue::make_double(0.0));
+  // graph_idx/speed_limit stay optional (absent = RMF default), no 0 per lane.
   need("mutex", ParamValue::make_string(""));
   need("demo_mock_floor_name", ParamValue::make_string(""));
   need("demo_mock_lift_name", ParamValue::make_string(""));
@@ -513,28 +557,6 @@ bool segment_intersect(double ax, double ay, double bx, double by, double cx,
   ix = ax + t * rx;
   iy = ay + t * ry;
   return true;
-}
-
-void draw_orientation_combo(std::map<std::string, ParamValue> &params,
-                            bool &dirty, bool &commit) {
-  auto &pv = params["orientation"];
-  if (pv.type != ParamType::STRING) {
-    pv.type = ParamType::STRING;
-    pv.s.clear();
-  }
-  const char *items[] = {"(none)", "forward", "backward"};
-  int current = 0;
-  if (pv.s == "forward")
-    current = 1;
-  else if (pv.s == "backward")
-    current = 2;
-  ImGui::PushID("orientation");
-  if (ImGui::Combo("orientation", &current, items, 3)) {
-    pv.s = (current == 1) ? "forward" : (current == 2) ? "backward" : "";
-    dirty = true;
-    commit = true;
-  }
-  ImGui::PopID();
 }
 
 std::string get_mutex(const std::map<std::string, ParamValue> &p) {
@@ -569,34 +591,6 @@ std::vector<MutexGroupInfo> gather_mutex_groups(const Level &level) {
     out.push_back(info);
   }
   return out;
-}
-
-void draw_mutex_combo(std::map<std::string, ParamValue> &params,
-                      const std::vector<MutexGroupInfo> &groups, bool &dirty,
-                      bool &commit) {
-  std::string cur = get_mutex(params);
-  ImGui::PushID("mutex");
-  if (ImGui::BeginCombo("mutex", cur.empty() ? "(none)" : cur.c_str())) {
-    if (ImGui::Selectable("(none)", cur.empty())) {
-      params["mutex"] = ParamValue::make_string("");
-      dirty = commit = true;
-    }
-    for (const auto &g : groups) {
-      if (ImGui::Selectable(g.name.c_str(), g.name == cur)) {
-        params["mutex"] = ParamValue::make_string(g.name);
-        dirty = commit = true;
-      }
-    }
-    ImGui::EndCombo();
-  }
-  std::string nv = cur;
-  if (ImGui::InputTextWithHint("##mutex_new", "type a new group", &nv)) {
-    params["mutex"] = ParamValue::make_string(nv);
-    dirty = true;
-  }
-  if (ImGui::IsItemDeactivatedAfterEdit())
-    commit = true;
-  ImGui::PopID();
 }
 
 void draw_param_editor(std::map<std::string, ParamValue> &params,
@@ -665,6 +659,185 @@ void draw_param_editor(std::map<std::string, ParamValue> &params,
     params[key] = pv;
 }
 
+// Form-row variants: label left, control right. Call inside a BeginFormTable.
+static void draw_param_row(std::map<std::string, ParamValue> &params,
+                           const char *key, ParamType type, bool &dirty,
+                           bool &commit) {
+  ImGui::PushID(key);
+  ImGuiWidgets::FormRow(key);
+
+  if (param_optional(key)) {
+    auto it = params.find(key);
+    const bool present = (it != params.end() && it->second.type == type);
+    if (!present) {
+      if (ImGui::Button("Set")) {
+        params[key] = (type == ParamType::INT) ? ParamValue::make_int(0)
+                                               : ParamValue::make_double(0.0);
+        dirty = commit = true;
+      }
+    } else {
+      const float clear_w = ImGui::GetFrameHeight();
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth() - clear_w -
+                              ImGui::GetStyle().ItemSpacing.x);
+      if (type == ParamType::INT) {
+        int v = it->second.i;
+        if (ImGui::InputInt("##v", &v)) {
+          params[key] = ParamValue::make_int(v);
+          dirty = true;
+        }
+      } else {
+        float v = (float)it->second.d;
+        if (ImGui::InputFloat("##v", &v, 0.0f, 0.0f, "%.4f")) {
+          params[key] = ParamValue::make_double((double)v);
+          dirty = true;
+        }
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        commit = true;
+      ImGui::SameLine();
+      if (ImGui::Button(ICON_MDI_CLOSE, ImVec2(clear_w, 0.0f))) {
+        params.erase(key);
+        dirty = commit = true;
+      }
+    }
+    ImGui::PopID();
+    return;
+  }
+
+  auto it = params.find(key);
+  ParamValue pv = (it != params.end()) ? it->second : ParamValue{};
+  if (pv.type != type) {
+    pv.type = type;
+    pv.s.clear();
+    pv.i = 0;
+    pv.d = 0.0;
+    pv.b = false;
+  }
+  bool edited = false;
+  switch (type) {
+  case ParamType::BOOL: {
+    bool v = pv.b;
+    if (ImGui::Checkbox("##v", &v)) {
+      pv.b = v;
+      dirty = edited = commit = true;
+    }
+    break;
+  }
+  case ParamType::STRING: {
+    std::string v = pv.s;
+    ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+    if (ImGui::InputText("##v", &v)) {
+      pv.s = std::move(v);
+      dirty = edited = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    break;
+  }
+  case ParamType::INT: {
+    int v = pv.i;
+    ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+    if (ImGui::InputInt("##v", &v)) {
+      pv.i = v;
+      dirty = edited = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    break;
+  }
+  case ParamType::DOUBLE: {
+    float fv = (float)pv.d;
+    ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+    if (ImGui::InputFloat("##v", &fv, 0.1f, 1.0f, "%.2f")) {
+      pv.d = (double)fv;
+      dirty = edited = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      commit = true;
+    break;
+  }
+  }
+  ImGui::PopID();
+  if (edited)
+    params[key] = pv;
+}
+
+static void draw_orientation_row(std::map<std::string, ParamValue> &params,
+                                 bool &dirty, bool &commit) {
+  auto &pv = params["orientation"];
+  if (pv.type != ParamType::STRING) {
+    pv.type = ParamType::STRING;
+    pv.s.clear();
+  }
+  const char *items[] = {"(none)", "forward", "backward"};
+  int current = (pv.s == "forward") ? 1 : (pv.s == "backward") ? 2 : 0;
+  ImGui::PushID("orientation");
+  ImGuiWidgets::FormRow("orientation");
+  ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+  if (ImGui::Combo("##v", &current, items, 3)) {
+    pv.s = (current == 1) ? "forward" : (current == 2) ? "backward" : "";
+    dirty = commit = true;
+  }
+  ImGui::PopID();
+}
+
+static void draw_mutex_row(std::map<std::string, ParamValue> &params,
+                           const std::vector<MutexGroupInfo> &groups,
+                           EditorState &state, bool &dirty, bool &commit) {
+  std::string cur = get_mutex(params);
+  const ImGuiStyle &st = ImGui::GetStyle();
+  ImGui::PushID("mutex");
+  ImGuiWidgets::FormRow("mutex");
+  if (!state.mutex_adding) {
+    const float plus_w = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth() - plus_w -
+                            st.ItemSpacing.x);
+    if (ImGui::BeginCombo("##v", cur.empty() ? "(none)" : cur.c_str())) {
+      if (ImGui::Selectable("(none)", cur.empty())) {
+        params["mutex"] = ParamValue::make_string("");
+        dirty = commit = true;
+      }
+      for (const auto &g : groups) {
+        if (ImGui::Selectable(g.name.c_str(), g.name == cur)) {
+          params["mutex"] = ParamValue::make_string(g.name);
+          dirty = commit = true;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_MDI_PLUS, ImVec2(plus_w, 0.0f))) {
+      state.mutex_adding = true;
+      state.mutex_new_buf.clear();
+    }
+  } else {
+    const float set_w = ImGui::CalcTextSize("Set").x + st.FramePadding.x * 2.0f;
+    const float cancel_w =
+        ImGui::CalcTextSize("Cancel").x + st.FramePadding.x * 2.0f;
+    float input_w = ImGuiWidgets::FormControlWidth() - set_w - cancel_w -
+                    st.ItemSpacing.x * 2.0f;
+    if (input_w < 40.0f)
+      input_w = 40.0f;
+    ImGui::SetNextItemWidth(input_w);
+    ImGui::InputTextWithHint("##newmutex", "new group", &state.mutex_new_buf);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(state.mutex_new_buf.empty());
+    if (ImGui::Button("Set")) {
+      params["mutex"] = ParamValue::make_string(state.mutex_new_buf);
+      dirty = commit = true;
+      state.mutex_adding = false;
+      state.mutex_new_buf.clear();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      state.mutex_adding = false;
+      state.mutex_new_buf.clear();
+    }
+  }
+  ImGui::PopID();
+}
+
 // Bottom-right HUD listing whatever controls are active right now. Drawn to the
 // draw list like the coord HUD so it never captures canvas clicks.
 void draw_controls_overlay(const canvas::MapCanvas &c,
@@ -689,19 +862,23 @@ void draw_controls_overlay(const canvas::MapCanvas &c,
 
   ImVec2 cp = c.canvas_pos(), cs = c.canvas_size();
   ImVec2 tl(cp.x + cs.x - w - 8.0f, cp.y + cs.y - h - 8.0f);
+  ImVec2 br(tl.x + w, tl.y + h);
   ImDrawList *dl = c.draw_list();
-  dl->AddRectFilled(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(13, 13, 13, 200),
-                    4.0f);
-  dl->AddRect(tl, ImVec2(tl.x + w, tl.y + h), IM_COL32(255, 255, 255, 35),
-              4.0f);
+  dl->AddRectFilled(
+      tl, br,
+      ImGui::GetColorU32(theme::with_alpha(theme::palette::surface, 0.92f)),
+      6.0f);
+  dl->AddRect(tl, br, ImGui::GetColorU32(theme::palette::border), 6.0f);
 
   float x = tl.x + pad, y = tl.y + pad;
-  dl->AddText(ImVec2(x, y), IM_COL32(150, 190, 255, 255), title.c_str());
+  dl->AddText(ImVec2(x, y), ImGui::GetColorU32(theme::palette::blue),
+              title.c_str());
   y += lh + 4.0f;
   for (const CanvasControl *ctl : controls) {
-    dl->AddText(ImVec2(x, y), IM_COL32(235, 225, 120, 255),
+    dl->AddText(ImVec2(x, y), ImGui::GetColorU32(theme::palette::accent),
                 ctl->chord().c_str());
-    dl->AddText(ImVec2(x + key_w + gap, y), IM_COL32(205, 205, 205, 255),
+    dl->AddText(ImVec2(x + key_w + gap, y),
+                ImGui::GetColorU32(theme::palette::muted),
                 ctl->description().c_str());
     y += lh;
   }
@@ -863,6 +1040,82 @@ EM_JS(void, mevjs_set_reference_level, (const char *name), {
   if (window.imrmf.yjs)
     window.imrmf.yjs.setReferenceLevelName(UTF8ToString(name));
 });
+EM_JS(void, mevjs_drawing_set, (const char *level, const char *filename), {
+  if (window.imrmf.yjs && window.imrmf.yjs.drawingSet)
+    window.imrmf.yjs.drawingSet(UTF8ToString(level), UTF8ToString(filename));
+});
+
+// Results land in polled slots (ImGui is immediate-mode).
+EM_JS(void, mev_assets_list, (const char *id_c, const char *subdir_c), {
+  if (!window.imrmf)
+    return;
+  window.imrmf._assets = {code : 'busy', payload : null};
+  let base = window.location.origin || "";
+  while (base.length && base[base.length - 1] === '/')
+    base = base.slice(0, -1);
+  const id = UTF8ToString(id_c), sub = UTF8ToString(subdir_c);
+  const url = base + "/assets/list?id=" + encodeURIComponent(id) +
+              (sub ? "&subdir=" + encodeURIComponent(sub) : "");
+  fetch(url)
+      .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+      .then(d => { window.imrmf._assets = {code : 'ok', payload : d}; })
+      .catch(e => {
+        window.imrmf._assets = {code : 'err', payload : String(e)};
+      });
+});
+EM_JS(const char *, mev_assets_code, (), {
+  return stringToNewUTF8(
+      (window.imrmf && window.imrmf._assets && window.imrmf._assets.code) ||
+      'idle');
+});
+EM_JS(const char *, mev_assets_payload, (), {
+  if (!window.imrmf || !window.imrmf._assets)
+    return stringToNewUTF8("");
+  const p = window.imrmf._assets.payload;
+  return stringToNewUTF8(
+      p == null ? "" : (typeof p === 'string' ? p : JSON.stringify(p)));
+});
+EM_JS(void, mev_asset_upload, (const char *id_c, const char *dir_c), {
+  if (!window.imrmf)
+    return;
+  const id = UTF8ToString(id_c), dir = UTF8ToString(dir_c);
+  let base = window.location.origin || "";
+  while (base.length && base[base.length - 1] === '/')
+    base = base.slice(0, -1);
+  window.imrmf._assets_up = {code : 'idle', name : ""};
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f) {
+      window.imrmf._assets_up = {code : 'idle', name : ""};
+      return;
+    }
+    window.imrmf._assets_up = {code : 'busy', name : f.name};
+    const path = (dir ? dir + '/' : "") + f.name;
+    f.arrayBuffer()
+        .then(buf => fetch(base + "/layer_asset?id=" + encodeURIComponent(id) +
+                               "&path=" + encodeURIComponent(path),
+                           {method : 'PUT', body : buf}))
+        .then(r => r.ok ? r.text() : r.text().then(t => Promise.reject(t)))
+        .then(() => { window.imrmf._assets_up = {code : 'ok', name : f.name}; })
+        .catch(e => {
+          window.imrmf._assets_up = {code : 'err', name : String(e)};
+        });
+  };
+  inp.click();
+});
+EM_JS(const char *, mev_asset_up_code, (), {
+  return stringToNewUTF8((window.imrmf && window.imrmf._assets_up &&
+                          window.imrmf._assets_up.code) ||
+                         'idle');
+});
+EM_JS(const char *, mev_asset_up_name, (), {
+  return stringToNewUTF8((window.imrmf && window.imrmf._assets_up &&
+                          window.imrmf._assets_up.name) ||
+                         "");
+});
 
 #endif // __EMSCRIPTEN__
 
@@ -933,8 +1186,7 @@ void EditorView::draw(Building &building, EditorState &state,
 
   const float right_col_w = 320.0f;
   ImVec2 region = ImGui::GetContentRegionAvail();
-  float status_h = ImGui::GetTextLineHeightWithSpacing() + 4.0f;
-  ImVec2 canvas_region(region.x - right_col_w - 8.0f, region.y - status_h);
+  ImVec2 canvas_region(region.x - right_col_w - 8.0f, region.y);
   if (canvas_region.x < 100.0f)
     canvas_region.x = 100.0f;
 
@@ -954,35 +1206,21 @@ void EditorView::draw(Building &building, EditorState &state,
   ImGui::EndChild();
 
   ImGui::SameLine();
-  ImGui::BeginChild("right_col", ImVec2(right_col_w, region.y - status_h),
-                    false);
+  ImGui::BeginChild("right_col", ImVec2(right_col_w, region.y), false);
   if (state.align_floors_mode) {
     draw_align_floors_panel(building, state);
   } else {
     draw_building_panel(building, state);
     ImGui::Separator();
-    ImGui::TextDisabled("View");
-    ImGui::Checkbox("Show fiducials", &state.show_fiducials);
-    if (!state.show_fiducials)
-      state.selected_fiducial_idx = -1;
-    ImGui::Checkbox("Floors", &state.show_floors);
-    ImGui::SameLine();
-    ImGui::Checkbox("Walls", &state.show_walls);
-    ImGui::Checkbox("Doors", &state.show_doors);
-    ImGui::SameLine();
-    ImGui::Checkbox("Measurements", &state.show_measurements);
-    ImGui::Separator();
     draw_mutex_groups_panel(building, state);
     ImGui::Separator();
-    draw_add_layer_section(building, state);
-    ImGui::Separator();
     draw_layer_config_panel(building, state);
+    draw_add_layer_section(building, state);
+    draw_layer_browse_modal(building, state);
     ImGui::Separator();
     draw_attribute_panel(building, state);
   }
   ImGui::EndChild();
-
-  draw_status_bar(state);
 
   if (!ImGui::GetIO().WantTextInput) {
     // `S` collides with Ctrl+S (Save); require no modifier.
@@ -1098,8 +1336,7 @@ void EditorView::draw(Building &building, EditorState &state,
     ImGui::OpenPopup("Confirm delete");
     state.pending_vertex_delete = false;
   }
-  if (ImGui::BeginPopupModal("Confirm delete", nullptr,
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGuiWidgets::BeginModal("Confirm delete", 360.0f)) {
     Level &level = building.levels[state.level_idx];
     int idx = state.pending_vertex_delete_idx;
     auto refs = (idx >= 0 && idx < (int)level.vertices.size())
@@ -1107,21 +1344,19 @@ void EditorView::draw(Building &building, EditorState &state,
                     : std::vector<int>{};
     ImGui::Text("Vertex %d is referenced by %d lane(s).", idx,
                 (int)refs.size());
-    ImGui::Text("Delete vertex and dependent lanes?");
-    ImGui::Separator();
-    if (ImGui::Button("Delete", ImVec2(120, 0))) {
+    ImGui::TextDisabled("Delete vertex and dependent lanes?");
+    const int a = ImGuiWidgets::ModalActions("Delete", "Cancel");
+    if (a == 1) {
       yjs_op_vertex_delete(level.name, idx);
       delete_vertex(level, idx);
       state.selected_vertices.clear();
       state.pending_vertex_delete_idx = -1;
       ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+    } else if (a == 2) {
       state.pending_vertex_delete_idx = -1;
       ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    ImGuiWidgets::EndModal();
   }
 }
 
@@ -1137,16 +1372,72 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     if (shown.size() > kMaxLabel) {
       shown = shown.substr(0, kMaxLabel - 1) + "\xE2\x80\xA6"; // utf-8 ellipsis
     }
+    ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", shown.c_str());
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s", top_bar.connection_label.c_str());
+      ImGui::SetTooltip("%s", top_bar.details.empty()
+                                  ? top_bar.connection_label.c_str()
+                                  : top_bar.details.c_str());
+    if (ImGui::IsItemClicked())
+      ImGui::OpenPopup("Connection##conn_info");
     ImGui::SameLine();
   }
+  if (ImGuiWidgets::BeginModal("Connection##conn_info", 360.0f)) {
+    ImGui::TextWrapped("%s", top_bar.details.empty()
+                                 ? top_bar.connection_label.c_str()
+                                 : top_bar.details.c_str());
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    const bool dc = top_bar.can_disconnect && (bool)top_bar.on_disconnect;
+    const float bw = 120.0f;
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    const float total = bw + (dc ? bw + sp : 0.0f);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > total)
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - total));
+    if (dc) {
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            theme::with_alpha(theme::palette::danger, 0.75f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
+      if (ImGui::Button("Disconnect", ImVec2(bw, 0))) {
+        top_bar.on_disconnect();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::PopStyleColor(2);
+      ImGui::SameLine();
+    }
+    if (ImGui::Button("Close", ImVec2(bw, 0)))
+      ImGui::CloseCurrentPopup();
+    ImGuiWidgets::EndModal();
+  }
+#ifdef __EMSCRIPTEN__
+  {
+    const char *yjs = map_editor_yjs_status();
+    if (yjs && yjs[0]) {
+      bool ok = std::strcmp(yjs, "connected") == 0 && map_editor_yjs_synced();
+      const ImVec4 col =
+          ok ? theme::palette::success
+             : (std::strcmp(yjs, "connecting") == 0 ? theme::palette::warning
+                                                    : theme::palette::danger);
+      ImGui::PushStyleColor(ImGuiCol_Text, col);
+      ImGuiWidgets::IconText(ICON_MDI_ACCOUNT_MULTIPLE, "collab");
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        char tip[64];
+        std::snprintf(tip, sizeof(tip), "%s%s", yjs, ok ? " (synced)" : "");
+        ImGui::SetTooltip("%s", tip);
+      }
+      ImGui::SameLine();
+    }
+    if (yjs)
+      std::free((void *)yjs);
+  }
+#endif
   if (top_bar.can_disconnect && top_bar.on_disconnect) {
     if (ImGui::SmallButton("Disconnect"))
       top_bar.on_disconnect();
     ImGui::SameLine();
   }
+  ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
 
@@ -1157,7 +1448,7 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 #endif
   if (!can_undo)
     ImGui::BeginDisabled();
-  if (ImGui::Button("Undo")) {
+  if (ImGui::Button(ICON_MDI_UNDO)) {
 #ifdef __EMSCRIPTEN__
     map_editor_yjs_undo();
 #endif
@@ -1165,11 +1456,11 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   if (!can_undo)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Ctrl+Z");
+    ImGui::SetTooltip("Undo (Ctrl+Z)");
   ImGui::SameLine();
   if (!can_redo)
     ImGui::BeginDisabled();
-  if (ImGui::Button("Redo")) {
+  if (ImGui::Button(ICON_MDI_REDO)) {
 #ifdef __EMSCRIPTEN__
     map_editor_yjs_redo();
 #endif
@@ -1177,16 +1468,18 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   if (!can_redo)
     ImGui::EndDisabled();
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Ctrl+Y / Ctrl+Shift+Z");
+    ImGui::SetTooltip("Redo (Ctrl+Y / Ctrl+Shift+Z)");
   ImGui::SameLine();
+  ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
 
-  auto mode_button = [&](const char *label, Mode m) {
+  auto mode_button = [&](const char *icon, const char *tip, Mode m,
+                         bool same_line = true) {
     bool active = (state.mode == m);
     if (active)
-      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(80, 130, 200, 255));
-    if (ImGui::Button(label)) {
+      ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
+    if (ImGui::Button(icon)) {
       state.mode = m;
       state.pending_lane_start = -1;
       state.pending_edge_start = -1;
@@ -1194,22 +1487,159 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     }
     if (active)
       ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("%s", tip);
+    if (same_line)
+      ImGui::SameLine();
+  };
+  auto tool_sep = []() {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("|");
     ImGui::SameLine();
   };
-  mode_button("Select [S]", Mode::Pan);
-  mode_button("Vertex [V]", Mode::Vertex);
-  mode_button("Lane [L]", Mode::Lane);
-  mode_button("Wall [W]", Mode::Wall);
-  mode_button("Door [D]", Mode::Door);
-  mode_button("Measure [M]", Mode::Measurement);
-  mode_button("Floor [F]", Mode::Floor);
-  mode_button("Hole [H]", Mode::Hole);
+  mode_button(ICON_MDI_CURSOR_DEFAULT, "Select [S]", Mode::Pan);
+
+  {
+    const int nv = (int)state.selected_vertices.size();
+    const int nl = (int)state.selected_lanes.size();
+    if (nv > 0 || nl > 0) {
+      ImGui::AlignTextToFramePadding();
+      if (nv > 0 && nl > 0)
+        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f),
+                           "%d vertex / %d lane%s", nv, nl, nl == 1 ? "" : "s");
+      else if (nv > 0)
+        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d vertex%s", nv,
+                           nv == 1 ? "" : "es");
+      else
+        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d lane%s", nl,
+                           nl == 1 ? "" : "s");
+      ImGui::SameLine();
+
+      std::vector<int> implied_lanes;
+      for (int v : state.selected_vertices) {
+        for (int li : lanes_referencing_vertex(level, v)) {
+          if (std::find(state.selected_lanes.begin(),
+                        state.selected_lanes.end(),
+                        li) == state.selected_lanes.end() &&
+              std::find(implied_lanes.begin(), implied_lanes.end(), li) ==
+                  implied_lanes.end())
+            implied_lanes.push_back(li);
+        }
+      }
+      const bool any_lanes_affected = nl > 0 || !implied_lanes.empty();
+
+      auto delete_lane_indices = [&](std::vector<int> lanes) {
+        std::sort(lanes.begin(), lanes.end(), std::greater<int>());
+        lanes.erase(std::unique(lanes.begin(), lanes.end()), lanes.end());
+        for (int i : lanes) {
+          yjs_op_lane_delete(level.name, i);
+          delete_lane(level, i);
+        }
+      };
+      auto delete_all_selected = [&]() {
+        // Lanes first (descending) so indices stay valid. Vertex delete
+        // cascades via Yjs.
+        delete_lane_indices(state.selected_lanes);
+        auto sel = state.selected_vertices;
+        std::sort(sel.begin(), sel.end(), std::greater<int>());
+        for (int i : sel) {
+          yjs_op_vertex_delete(level.name, i);
+          delete_vertex(level, i);
+        }
+        state.selected_vertices.clear();
+        state.selected_lanes.clear();
+      };
+      auto delete_only_lanes = [&]() {
+        std::vector<int> all_lanes = state.selected_lanes;
+        for (int li : implied_lanes) {
+          if (std::find(all_lanes.begin(), all_lanes.end(), li) ==
+              all_lanes.end())
+            all_lanes.push_back(li);
+        }
+        delete_lane_indices(all_lanes);
+        state.selected_lanes.clear();
+      };
+
+      if (nv > 0 && any_lanes_affected) {
+        if (ImGui::Button(ICON_MDI_DELETE))
+          ImGui::OpenPopup("delete_combo_popup");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Delete\xE2\x80\xA6");
+        if (ImGui::BeginPopup("delete_combo_popup")) {
+          if (ImGui::Selectable("Delete vertices and lanes"))
+            delete_all_selected();
+          if (ImGui::Selectable("Delete lanes only"))
+            delete_only_lanes();
+          ImGui::EndPopup();
+        }
+      } else if (nv > 0) {
+        if (ImGui::Button(ICON_MDI_DELETE))
+          delete_all_selected();
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Delete");
+      } else {
+        if (ImGui::Button(ICON_MDI_DELETE))
+          delete_only_lanes();
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Delete");
+      }
+
+      if (nv >= 2) {
+        auto align_and_push = [&](AlignDir d, AlignTo t) {
+          apply_align(level, state.selected_vertices, d, t);
+          for (int vi : state.selected_vertices) {
+            if (vi >= 0 && vi < (int)level.vertices.size())
+              yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
+          }
+        };
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_MDI_ALIGN_VERTICAL_CENTER))
+          ImGui::OpenPopup("align_h_popup");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Align Vertically");
+        if (ImGui::BeginPopup("align_h_popup")) {
+          if (ImGui::Selectable("To average Y"))
+            align_and_push(AlignDir::Horizontal, AlignTo::Average);
+          if (ImGui::Selectable("To topmost Y"))
+            align_and_push(AlignDir::Horizontal, AlignTo::Min);
+          if (ImGui::Selectable("To bottommost Y"))
+            align_and_push(AlignDir::Horizontal, AlignTo::Max);
+          ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_MDI_ALIGN_HORIZONTAL_CENTER))
+          ImGui::OpenPopup("align_v_popup");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Align Horizontally");
+        if (ImGui::BeginPopup("align_v_popup")) {
+          if (ImGui::Selectable("To average X"))
+            align_and_push(AlignDir::Vertical, AlignTo::Average);
+          if (ImGui::Selectable("To leftmost X"))
+            align_and_push(AlignDir::Vertical, AlignTo::Min);
+          if (ImGui::Selectable("To rightmost X"))
+            align_and_push(AlignDir::Vertical, AlignTo::Max);
+          ImGui::EndPopup();
+        }
+      }
+      ImGui::SameLine();
+    }
+  }
+
+  tool_sep();
+  mode_button(ICON_MDI_VECTOR_POINT, "Vertex [V]", Mode::Vertex);
+  mode_button(ICON_MDI_VECTOR_POLYLINE, "Lane [L]", Mode::Lane);
+  tool_sep();
+  mode_button(ICON_MDI_WALL, "Wall [W]", Mode::Wall);
+  mode_button(ICON_MDI_DOOR, "Door [D]", Mode::Door);
+  mode_button(ICON_MDI_TEXTURE_BOX, "Floor [F]", Mode::Floor);
+  mode_button(ICON_MDI_VECTOR_POLYGON_VARIANT, "Hole [H]", Mode::Hole);
+  tool_sep();
 
   {
     const bool active = state.align_floors_mode;
     if (active)
-      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(80, 130, 200, 255));
-    if (ImGui::Button(active ? "Align floors [on]" : "Align floors")) {
+      ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
+    if (ImGui::Button(ICON_MDI_LAYERS_EDIT)) {
       state.align_floors_mode = !state.align_floors_mode;
       if (state.align_floors_mode) {
         state.selected_vertices.clear();
@@ -1248,128 +1678,13 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     }
     if (active)
       ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Align floors");
     ImGui::SameLine();
   }
 
-  if (state.dirty) {
-    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "(modified)");
-  } else {
-    ImGui::TextDisabled("(saved)");
-  }
-
-  const int nv = (int)state.selected_vertices.size();
-  const int nl = (int)state.selected_lanes.size();
-  if (nv == 0 && nl == 0)
-    return;
-
-  ImGui::SameLine();
-  ImGui::TextDisabled("|");
-  ImGui::SameLine();
-  if (nv > 0 && nl > 0)
-    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d vertex / %d lane%s",
-                       nv, nl, nl == 1 ? "" : "s");
-  else if (nv > 0)
-    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d vertex%s", nv,
-                       nv == 1 ? "" : "es");
-  else
-    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d lane%s", nl,
-                       nl == 1 ? "" : "s");
-  ImGui::SameLine();
-
-  std::vector<int> implied_lanes;
-  for (int v : state.selected_vertices) {
-    for (int li : lanes_referencing_vertex(level, v)) {
-      if (std::find(state.selected_lanes.begin(), state.selected_lanes.end(),
-                    li) == state.selected_lanes.end() &&
-          std::find(implied_lanes.begin(), implied_lanes.end(), li) ==
-              implied_lanes.end())
-        implied_lanes.push_back(li);
-    }
-  }
-  const bool any_lanes_affected = nl > 0 || !implied_lanes.empty();
-
-  auto delete_lane_indices = [&](std::vector<int> lanes) {
-    std::sort(lanes.begin(), lanes.end(), std::greater<int>());
-    lanes.erase(std::unique(lanes.begin(), lanes.end()), lanes.end());
-    for (int i : lanes) {
-      yjs_op_lane_delete(level.name, i);
-      delete_lane(level, i);
-    }
-  };
-  auto delete_all_selected = [&]() {
-    // Lanes first (descending) so indices stay valid; vertex deletion then
-    // cascades through Yjs to any remaining referencing lanes.
-    delete_lane_indices(state.selected_lanes);
-    auto sel = state.selected_vertices;
-    std::sort(sel.begin(), sel.end(), std::greater<int>());
-    for (int i : sel) {
-      yjs_op_vertex_delete(level.name, i);
-      delete_vertex(level, i);
-    }
-    state.selected_vertices.clear();
-    state.selected_lanes.clear();
-  };
-  auto delete_only_lanes = [&]() {
-    std::vector<int> all_lanes = state.selected_lanes;
-    for (int li : implied_lanes) {
-      if (std::find(all_lanes.begin(), all_lanes.end(), li) == all_lanes.end())
-        all_lanes.push_back(li);
-    }
-    delete_lane_indices(all_lanes);
-    state.selected_lanes.clear();
-  };
-
-  if (nv > 0 && any_lanes_affected) {
-    if (ImGui::Button("Delete \xE2\x96\xBE"))
-      ImGui::OpenPopup("delete_combo_popup");
-    if (ImGui::BeginPopup("delete_combo_popup")) {
-      if (ImGui::Selectable("Delete vertices and lanes"))
-        delete_all_selected();
-      if (ImGui::Selectable("Delete lanes only"))
-        delete_only_lanes();
-      ImGui::EndPopup();
-    }
-  } else if (nv > 0) {
-    if (ImGui::Button("Delete"))
-      delete_all_selected();
-  } else {
-    if (ImGui::Button("Delete"))
-      delete_only_lanes();
-  }
-
-  if (nv >= 2) {
-    auto align_and_push = [&](AlignDir d, AlignTo t) {
-      apply_align(level, state.selected_vertices, d, t);
-      for (int vi : state.selected_vertices) {
-        if (vi >= 0 && vi < (int)level.vertices.size())
-          yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
-      }
-    };
-    ImGui::SameLine();
-    if (ImGui::Button("Align H"))
-      ImGui::OpenPopup("align_h_popup");
-    if (ImGui::BeginPopup("align_h_popup")) {
-      if (ImGui::Selectable("To average Y"))
-        align_and_push(AlignDir::Horizontal, AlignTo::Average);
-      if (ImGui::Selectable("To topmost Y"))
-        align_and_push(AlignDir::Horizontal, AlignTo::Min);
-      if (ImGui::Selectable("To bottommost Y"))
-        align_and_push(AlignDir::Horizontal, AlignTo::Max);
-      ImGui::EndPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Align V"))
-      ImGui::OpenPopup("align_v_popup");
-    if (ImGui::BeginPopup("align_v_popup")) {
-      if (ImGui::Selectable("To average X"))
-        align_and_push(AlignDir::Vertical, AlignTo::Average);
-      if (ImGui::Selectable("To leftmost X"))
-        align_and_push(AlignDir::Vertical, AlignTo::Min);
-      if (ImGui::Selectable("To rightmost X"))
-        align_and_push(AlignDir::Vertical, AlignTo::Max);
-      ImGui::EndPopup();
-    }
-  }
+  // No trailing SameLine so the divider below spans full width.
+  mode_button(ICON_MDI_RULER, "Measure [M]", Mode::Measurement, false);
 }
 
 void EditorView::draw_canvas(Building &building, EditorState &state) {
@@ -1562,10 +1877,18 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
     yjs_op_layer_reorder(building.levels[state.level_idx].name, order);
   };
   layers_overlay_state_.selected_layer = state.selected_layer;
+  canvas::OverlayViewSettings view;
+  view.show_fiducials = &state.show_fiducials;
+  view.show_floors = &state.show_floors;
+  view.show_walls = &state.show_walls;
+  view.show_doors = &state.show_doors;
+  view.show_measurements = &state.show_measurements;
   canvas::draw_layers_overlay(building, state.level_idx,
                               state.floorplan_session, state.layer_session,
-                              layers_overlay_state_, canvas_, lcb);
+                              layers_overlay_state_, canvas_, lcb, view);
   state.selected_layer = layers_overlay_state_.selected_layer;
+  if (!state.show_fiducials)
+    state.selected_fiducial_idx = -1;
 
   ControlContext cctx;
   cctx.mode = state.mode;
@@ -2200,31 +2523,25 @@ void EditorView::draw_add_layer_section(Building &building,
   Level &level = building.levels[state.level_idx];
   double mpp = compute_level_mpp(building, state.level_idx);
 
-  if (ImGui::Button("+ Add Layer")) {
-    state.open_add_layer_modal = true;
-    state.new_layer_name.clear();
-    state.new_layer_filename.clear();
-  }
-  ImGui::SameLine();
-  if (mpp > 0.0)
-    ImGui::TextDisabled("mpp=%.4f m/px", mpp);
-  else
-    ImGui::TextDisabled("no mpp set");
-
   if (state.open_add_layer_modal) {
     ImGui::OpenPopup("Add Layer");
     state.open_add_layer_modal = false;
   }
-  if (ImGui::BeginPopupModal("Add Layer", nullptr,
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::InputText("Name", &state.new_layer_name);
-    ImGui::InputText("Filename", &state.new_layer_filename);
-    ImGui::Separator();
-    bool can_add =
+  if (ImGuiWidgets::BeginModal("Add Layer")) {
+    if (ImGuiWidgets::BeginFormTable("##add_layer_form")) {
+      ImGuiWidgets::FormRow("Name");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      ImGui::InputText("##name", &state.new_layer_name);
+      ImGuiWidgets::FormRow("Filename");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      ImGui::InputText("##filename", &state.new_layer_filename);
+      ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Path is relative to the building.yaml directory.\n");
+    const bool can_add =
         !state.new_layer_name.empty() && !state.new_layer_filename.empty();
-    if (!can_add)
-      ImGui::BeginDisabled();
-    if (ImGui::Button("Add", ImVec2(120, 0))) {
+    const int action = ImGuiWidgets::ModalActions("Add", "Cancel", can_add);
+    if (action == 1) {
       Layer L;
       L.name = state.new_layer_name;
       L.filename = state.new_layer_filename;
@@ -2241,15 +2558,176 @@ void EditorView::draw_add_layer_section(Building &building,
       level.layers.insert(level.layers.begin(), L);
       state.selected_layer = 0;
       ImGui::CloseCurrentPopup();
-    }
-    if (!can_add)
-      ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+    } else if (action == 2) {
       ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    ImGuiWidgets::EndModal();
   }
+}
+
+namespace {
+struct BrowseEntry {
+  std::string name;
+  bool is_dir = false;
+};
+
+std::string browse_json_str(const std::string &src, const std::string &key) {
+  std::string needle = "\"" + key + "\":\"";
+  auto pos = src.find(needle);
+  if (pos == std::string::npos)
+    return {};
+  pos += needle.size();
+  std::string out;
+  while (pos < src.size() && src[pos] != '"') {
+    if (src[pos] == '\\' && pos + 1 < src.size()) {
+      out.push_back(src[pos + 1]);
+      pos += 2;
+    } else {
+      out.push_back(src[pos++]);
+    }
+  }
+  return out;
+}
+bool browse_json_bool(const std::string &src, const std::string &key) {
+  std::string needle = "\"" + key + "\":";
+  auto pos = src.find(needle);
+  if (pos == std::string::npos)
+    return false;
+  pos += needle.size();
+  while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t'))
+    ++pos;
+  return src.compare(pos, 4, "true") == 0;
+}
+std::vector<BrowseEntry> browse_parse(const std::string &payload) {
+  std::vector<BrowseEntry> out;
+  std::string marker = "\"entries\":[";
+  auto ep = payload.find(marker);
+  if (ep == std::string::npos)
+    return out;
+  ep += marker.size();
+  while (true) {
+    auto os = payload.find('{', ep);
+    if (os == std::string::npos)
+      break;
+    auto oe = payload.find('}', os);
+    if (oe == std::string::npos)
+      break;
+    std::string obj = payload.substr(os, oe - os + 1);
+    BrowseEntry e;
+    e.name = browse_json_str(obj, "name");
+    e.is_dir = browse_json_bool(obj, "is_dir");
+    if (!e.name.empty())
+      out.push_back(e);
+    ep = oe + 1;
+  }
+  return out;
+}
+} // namespace
+
+void EditorView::draw_layer_browse_modal(Building &building,
+                                         EditorState &state) {
+  Level &level = building.levels[state.level_idx];
+  if (state.open_layer_browse) {
+    ImGui::OpenPopup("Browse layers");
+    state.open_layer_browse = false;
+    state.browse_relist = true;
+    state.browse_status.clear();
+    state.browse_last_upload.clear();
+  }
+  if (!ImGuiWidgets::BeginModal("Browse layers", 460.0f))
+    return;
+
+  if (state.browse_relist) {
+    mev_assets_list(building_id_.c_str(), state.browse_subdir.c_str());
+    state.browse_relist = false;
+  }
+
+  ImGui::TextDisabled("%s/%s", building_id_.c_str(),
+                      state.browse_subdir.c_str());
+
+  if (!state.browse_subdir.empty()) {
+    if (ImGui::SmallButton(ICON_MDI_ARROW_UP " Up")) {
+      auto slash = state.browse_subdir.find_last_of('/');
+      state.browse_subdir = (slash == std::string::npos)
+                                ? std::string()
+                                : state.browse_subdir.substr(0, slash);
+      state.browse_relist = true;
+    }
+    ImGui::SameLine();
+  }
+  if (ImGui::SmallButton(ICON_MDI_REFRESH " Refresh"))
+    state.browse_relist = true;
+  ImGui::SameLine();
+  if (ImGui::SmallButton(ICON_MDI_UPLOAD " Upload"))
+    mev_asset_upload(building_id_.c_str(), state.browse_subdir.c_str());
+
+  {
+    std::string uc = mev_asset_up_code();
+    std::string un = mev_asset_up_name();
+    if (uc == "busy") {
+      state.browse_status = "Uploading " + un;
+    } else if (uc == "ok" && un != state.browse_last_upload) {
+      state.browse_last_upload = un;
+      state.browse_status = "Uploaded " + un;
+      state.browse_relist = true;
+    } else if (uc == "err") {
+      state.browse_status = "Upload failed: " + un;
+    }
+  }
+
+  ImGui::Separator();
+  std::string code = mev_assets_code();
+  ImGui::BeginChild("##browse_list", ImVec2(0, 240), true);
+  if (code == "busy") {
+    ImGui::TextDisabled("Loading...");
+  } else if (code == "err") {
+    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.33f, 1.0f), "%s",
+                       mev_assets_payload());
+  } else if (code == "ok") {
+    auto entries = browse_parse(mev_assets_payload());
+    if (entries.empty())
+      ImGui::TextDisabled("(empty)");
+    for (const auto &e : entries) {
+      ImGui::PushID(e.name.c_str());
+      if (e.is_dir) {
+        std::string lbl = std::string(ICON_MDI_FOLDER " ") + e.name;
+        if (ImGui::Selectable(lbl.c_str())) {
+          state.browse_subdir = state.browse_subdir.empty()
+                                    ? e.name
+                                    : state.browse_subdir + "/" + e.name;
+          state.browse_relist = true;
+        }
+      } else {
+        std::string lbl = std::string(ICON_MDI_FILE_IMAGE " ") + e.name;
+        if (ImGui::Selectable(lbl.c_str())) {
+          std::string rel = state.browse_subdir.empty()
+                                ? e.name
+                                : state.browse_subdir + "/" + e.name;
+          if (state.selected_layer == -2) {
+            level.drawing_filename = rel;
+            yjs_op_drawing_set(level.name, rel);
+            texture_provider_->clear_cache();
+          } else if (state.selected_layer >= 0 &&
+                     state.selected_layer < (int)level.layers.size()) {
+            Layer &L = level.layers[state.selected_layer];
+            L.filename = rel;
+            yjs_op_layer_set(level.name, L);
+          }
+          ImGui::CloseCurrentPopup();
+        }
+      }
+      ImGui::PopID();
+    }
+  } else {
+    ImGui::TextDisabled("Click Refresh to list files.");
+  }
+  ImGui::EndChild();
+
+  if (!state.browse_status.empty())
+    ImGui::TextDisabled("%s", state.browse_status.c_str());
+  if (ImGuiWidgets::ModalActions("Close"))
+    ImGui::CloseCurrentPopup();
+  ImGuiWidgets::EndModal();
 }
 
 void EditorView::draw_building_panel(Building &building, EditorState &state) {
@@ -2279,164 +2757,284 @@ void EditorView::draw_building_panel(Building &building, EditorState &state) {
 void EditorView::draw_layer_config_panel(Building &building,
                                          EditorState &state) {
   Level &level = building.levels[state.level_idx];
+  constexpr int kFloorplanSel = -2; // state.selected_layer sentinel: floorplan
 
   // Drop stale align target if a peer deleted the layer.
   if (state.align_layer_idx >= (int)level.layers.size())
     state.align_layer_idx = -1;
 
-  ImGui::TextDisabled("Layer configuration");
+  if (!ImGui::CollapsingHeader("Layers"))
+    return;
 
-  {
-    ImGui::PushID("__cfg_fp");
-    if (ImGui::CollapsingHeader("Floorplan (reference)",
-                                ImGuiTreeNodeFlags_DefaultOpen)) {
-      FloorplanSession &fps = state.floorplan_session[level.name];
-      ImGui::Checkbox("visible##fp", &fps.visible);
-      ImGui::SameLine();
-      ImGui::Checkbox("invert##fp", &fps.invert);
-      ImGui::SetNextItemWidth(-1);
-      ImGui::SliderFloat("##fp_alpha", &fps.alpha, 0.0f, 1.0f, "alpha %.2f");
-    }
-    ImGui::PopID();
+  double mpp = compute_level_mpp(building, state.level_idx);
+  ImGui::AlignTextToFramePadding();
+  if (mpp > 0.0)
+    ImGui::TextDisabled("mpp %.4f", mpp);
+  else
+    ImGui::TextDisabled("no mpp");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Meters per image pixel for this level.\n"
+                      "Computed from the level's measurement lines:\n"
+                      "real length (m) divided by pixel length.");
+  const char *add_lbl = ICON_MDI_PLUS " Add layer";
+  float add_w =
+      ImGui::CalcTextSize(add_lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+  ImGui::SameLine();
+  float add_x = ImGui::GetContentRegionMax().x - add_w;
+  if (add_x > ImGui::GetCursorPosX())
+    ImGui::SetCursorPosX(add_x);
+  if (ImGui::Button(add_lbl)) {
+    state.open_add_layer_modal = true;
+    state.new_layer_name.clear();
+    state.new_layer_filename.clear();
   }
 
-  for (int i = 0; i < (int)level.layers.size(); ++i) {
-    Layer &L = level.layers[i];
-    const std::string layer_name = L.name;
-    LayerSession &sess = state.layer_session[level.name + ":" + L.name];
+  if (ImGui::BeginTable("##layers_tbl", 1, ImGuiTableFlags_RowBg)) {
+    ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch);
 
-    ImGui::PushID(i);
-
-    const bool is_aligning = (state.align_layer_idx == i);
-    if (is_aligning) {
-      ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(50, 110, 50, 230));
-      ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(60, 130, 60, 230));
-      ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(70, 150, 70, 255));
-    }
-    bool open =
-        ImGui::CollapsingHeader(L.name.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-    if (is_aligning)
-      ImGui::PopStyleColor(3);
-    if (!open) {
-      ImGui::PopID();
-      continue;
-    }
-
-    bool dirty = false, commit = false;
-
-    if (ImGui::Checkbox("visible", &L.visible))
-      commit = true;
-    ImGui::SameLine();
-    ImGui::Checkbox("invert", &sess.invert);
-
-    float col[3] = {(float)L.color_r, (float)L.color_g, (float)L.color_b};
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::ColorEdit3("##cfg_color", col, ImGuiColorEditFlags_NoInputs)) {
-      L.color_r = col[0];
-      L.color_g = col[1];
-      L.color_b = col[2];
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-
-    float a = (float)L.color_a;
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::SliderFloat("##cfg_alpha", &a, 0.0f, 1.0f, "alpha %.2f")) {
-      L.color_a = a;
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-
-    float scale = (float)L.scale;
-    float yaw_deg = (float)(L.yaw * 180.0 / M_PI);
-    float tx = (float)L.translation_x;
-    float ty = (float)L.translation_y;
-    if (ImGui::DragFloat("scale (m/px)", &scale, 0.0005f, 0.0001f, 100.0f,
-                         "%.6f")) {
-      L.scale = scale;
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-    if (ImGui::DragFloat("yaw (deg)", &yaw_deg, 0.5f, -360.0f, 360.0f,
-                         "%.2f")) {
-      L.yaw = yaw_deg * M_PI / 180.0;
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-    if (ImGui::DragFloat("tx (m)", &tx, 0.05f)) {
-      L.translation_x = tx;
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-    if (ImGui::DragFloat("ty (m)", &ty, 0.05f)) {
-      L.translation_y = ty;
-      dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      commit = true;
-
-    const char *btn = is_aligning ? "Stop aligning" : "Align on map";
-    if (is_aligning) {
-      ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(60, 130, 60, 220));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(70, 150, 70, 240));
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(80, 170, 80, 255));
-    }
-    if (ImGui::Button(btn)) {
+    // Floorplan row, sentinel -2.
+    ImGui::PushID("__fp_row");
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    if (ImGui::Selectable("Floorplan", state.selected_layer == kFloorplanSel)) {
       flush_pending_layer(level, state);
-      state.align_layer_idx = is_aligning ? -1 : i;
+      state.selected_layer = kFloorplanSel;
     }
-    if (is_aligning)
-      ImGui::PopStyleColor(3);
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Wheel = scale, left-drag = translate.\n"
-                        "Ctrl = fine (independent of canvas zoom).\n"
-                        "Middle-drag still pans the view.");
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Delete##cfg")) {
-#ifdef __EMSCRIPTEN__
-      yjs_op_layer_delete(level.name, L.name);
-#endif
-      level.layers.erase(level.layers.begin() + i);
-      if (state.selected_layer == i)
-        state.selected_layer = -1;
-      else if (state.selected_layer > i)
-        state.selected_layer -= 1;
-      if (state.align_layer_idx == i)
-        state.align_layer_idx = -1;
-      else if (state.align_layer_idx > i)
-        state.align_layer_idx -= 1;
-      ImGui::PopID();
-      return; // iterator invalidated
-    }
-
-    if (dirty) {
-      state.pending_commit_layer = layer_name;
-      state.pending_commit_time = ImGui::GetTime();
-    }
-    if (commit) {
-#ifdef __EMSCRIPTEN__
-      yjs_op_layer_set(level.name, L);
-#endif
-      state.pending_commit_layer.clear();
-      state.pending_commit_time = 0.0;
-    }
-
     ImGui::PopID();
+
+    for (int i = 0; i < (int)level.layers.size(); ++i) {
+      Layer &L = level.layers[i];
+      ImGui::PushID(i);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      const bool aligning = (state.align_layer_idx == i);
+      if (aligning)
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::palette::success);
+      if (ImGui::Selectable(L.name.c_str(), state.selected_layer == i)) {
+        flush_pending_layer(level, state);
+        state.selected_layer = i;
+      }
+      if (aligning)
+        ImGui::PopStyleColor();
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
   }
 
   if (state.align_layer_idx >= 0 &&
       state.align_layer_idx < (int)level.layers.size()) {
-    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Aligning: %s",
                        level.layers[state.align_layer_idx].name.c_str());
-    ImGui::TextDisabled("Wheel = scale  /  drag = translate");
-    ImGui::TextDisabled("Hold Ctrl for fine steps");
+    ImGui::TextDisabled("Wheel = scale, drag = move, Ctrl = fine");
+  }
+
+  if (state.selected_layer == kFloorplanSel) {
+    ImGui::Separator();
+    ImGui::TextUnformatted("Floorplan");
+    if (ImGuiWidgets::BeginFormTable("##fp_edit")) {
+      ImGuiWidgets::FormRow("Path");
+      float browse_w = ImGui::CalcTextSize(ICON_MDI_FOLDER_OPEN).x +
+                       ImGui::GetStyle().FramePadding.x * 2.0f;
+      float path_w = ImGuiWidgets::FormControlWidth() - browse_w -
+                     ImGui::GetStyle().ItemSpacing.x;
+      if (path_w < 40.0f)
+        path_w = 40.0f;
+      ImGui::SetNextItemWidth(path_w);
+      ImGui::InputText("##fppath", &level.drawing_filename);
+      const bool fp_commit = ImGui::IsItemDeactivatedAfterEdit();
+      ImGui::SameLine();
+      if (ImGui::Button(ICON_MDI_FOLDER_OPEN "##fpbrowse")) {
+        state.open_layer_browse = true;
+        auto slash = level.drawing_filename.find_last_of('/');
+        state.browse_subdir = (slash == std::string::npos)
+                                  ? std::string()
+                                  : level.drawing_filename.substr(0, slash);
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Browse files");
+      ImGui::EndTable();
+      if (fp_commit) {
+        yjs_op_drawing_set(level.name, level.drawing_filename);
+        texture_provider_->clear_cache();
+      }
+    }
+  }
+
+  if (state.selected_layer >= 0 &&
+      state.selected_layer < (int)level.layers.size()) {
+    ImGui::Separator();
+    Layer &L = level.layers[state.selected_layer];
+    const std::string layer_name = L.name;
+    // Keep the rename buffer in sync with the selected layer. It holds the
+    // in-progress name so L.name stays the old CRDT key until commit.
+    if (state.layer_name_buf_idx != state.selected_layer) {
+      state.layer_name_buf = L.name;
+      state.layer_name_buf_idx = state.selected_layer;
+    }
+    bool l_dirty = false, l_commit = false;
+    if (ImGuiWidgets::BeginFormTable("##layer_edit")) {
+      ImGuiWidgets::FormRow("Name");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      ImGui::InputText("##lname", &state.layer_name_buf);
+      const bool name_active = ImGui::IsItemActive();
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        const std::string nn = state.layer_name_buf;
+        bool taken = nn.empty();
+        for (int j = 0; !taken && j < (int)level.layers.size(); ++j)
+          if (j != state.selected_layer && level.layers[j].name == nn)
+            taken = true;
+        if (!taken && nn != layer_name) {
+#ifdef __EMSCRIPTEN__
+          yjs_op_layer_delete(level.name, layer_name); // rename = drop old key
+#endif
+          L.name = nn;
+          yjs_op_layer_set(level.name, L);
+        } else {
+          state.layer_name_buf = layer_name; // revert empty / duplicate
+        }
+      } else if (!name_active && state.layer_name_buf != L.name) {
+        // Resync when idle: a delete/reindex may have reused this index.
+        state.layer_name_buf = L.name;
+      }
+      ImGuiWidgets::FormRow("Path");
+      float browse_w = ImGui::CalcTextSize(ICON_MDI_FOLDER_OPEN).x +
+                       ImGui::GetStyle().FramePadding.x * 2.0f;
+      float path_w = ImGuiWidgets::FormControlWidth() - browse_w -
+                     ImGui::GetStyle().ItemSpacing.x;
+      if (path_w < 40.0f)
+        path_w = 40.0f;
+      ImGui::SetNextItemWidth(path_w);
+      if (ImGui::InputText("##lpath", &L.filename))
+        l_dirty = true;
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGui::SameLine();
+      if (ImGui::Button(ICON_MDI_FOLDER_OPEN "##browse")) {
+        state.open_layer_browse = true;
+        auto slash = L.filename.find_last_of('/');
+        state.browse_subdir = (slash == std::string::npos)
+                                  ? std::string()
+                                  : L.filename.substr(0, slash);
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Browse files");
+      float scale = (float)L.scale;
+      float yaw_deg = (float)(L.yaw * 180.0 / M_PI);
+      float tx = (float)L.translation_x;
+      float ty = (float)L.translation_y;
+      ImGuiWidgets::FormRow("Scale m/px");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      if (ImGui::DragFloat("##lscale", &scale, 0.0005f, 0.0001f, 100.0f,
+                           "%.6f")) {
+        L.scale = scale;
+        l_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGuiWidgets::FormRow("Yaw deg");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      if (ImGui::DragFloat("##lyaw", &yaw_deg, 0.5f, -360.0f, 360.0f, "%.2f")) {
+        L.yaw = yaw_deg * M_PI / 180.0;
+        l_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGuiWidgets::FormRow("Translation m");
+      float half =
+          (ImGuiWidgets::FormControlWidth() - ImGui::GetStyle().ItemSpacing.x) *
+          0.5f;
+      if (half < 1.0f)
+        half = 1.0f;
+      ImGui::SetNextItemWidth(half);
+      if (ImGui::DragFloat("##ltx", &tx, 0.05f)) {
+        L.translation_x = tx;
+        l_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(half);
+      if (ImGui::DragFloat("##lty", &ty, 0.05f)) {
+        L.translation_y = ty;
+        l_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGuiWidgets::FormRow("Color");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      float col4[4] = {(float)L.color_r, (float)L.color_g, (float)L.color_b,
+                       (float)L.color_a};
+      if (ImGui::ColorEdit4("##lcol", col4,
+                            ImGuiColorEditFlags_NoInputs |
+                                ImGuiColorEditFlags_AlphaBar |
+                                ImGuiColorEditFlags_AlphaPreviewHalf)) {
+        L.color_r = col4[0];
+        L.color_g = col4[1];
+        L.color_b = col4[2];
+        L.color_a = col4[3];
+        l_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        l_commit = true;
+      ImGui::EndTable();
+    }
+
+    const float full = ImGui::GetContentRegionAvail().x;
+    {
+      const bool aligning = (state.align_layer_idx == state.selected_layer);
+      if (aligning)
+        ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
+      if (ImGui::Button(aligning ? "Done aligning" : "Align on map",
+                        ImVec2(full, 0.0f))) {
+        flush_pending_layer(level, state);
+        state.align_layer_idx = aligning ? -1 : state.selected_layer;
+      }
+      if (aligning)
+        ImGui::PopStyleColor();
+    }
+
+    bool deleted = false;
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          theme::with_alpha(theme::palette::danger, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
+    if (ImGui::Button("Delete layer", ImVec2(full, 0.0f)))
+      ImGui::OpenPopup("Delete layer##del_layer");
+    ImGui::PopStyleColor(2);
+    if (ImGuiWidgets::BeginModal("Delete layer##del_layer", 320.0f)) {
+      ImGui::Text("Delete layer \"%s\"?", layer_name.c_str());
+      const int a = ImGuiWidgets::ModalActions("Delete", "Cancel");
+      if (a == 1) {
+        const int i = state.selected_layer;
+#ifdef __EMSCRIPTEN__
+        yjs_op_layer_delete(level.name, layer_name);
+#endif
+        level.layers.erase(level.layers.begin() + i);
+        state.selected_layer = -1;
+        if (state.align_layer_idx == i)
+          state.align_layer_idx = -1;
+        else if (state.align_layer_idx > i)
+          state.align_layer_idx -= 1;
+        deleted = true;
+        ImGui::CloseCurrentPopup();
+      } else if (a == 2) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGuiWidgets::EndModal();
+    }
+
+    if (!deleted) {
+      if (l_dirty) {
+        state.pending_commit_layer = layer_name;
+        state.pending_commit_time = ImGui::GetTime();
+      }
+      if (l_commit) {
+#ifdef __EMSCRIPTEN__
+        yjs_op_layer_set(level.name, L);
+#endif
+        state.pending_commit_layer.clear();
+        state.pending_commit_time = 0.0;
+      }
+    }
   }
 }
 
@@ -2549,77 +3147,360 @@ void EditorView::draw_mutex_groups_panel(Building &building,
       }
   };
 
-  ImGui::TextDisabled("Click a group to highlight its members.");
-  if (groups.empty())
-    ImGui::TextDisabled("No mutex groups yet.");
-  for (const auto &g : groups) {
-    ImGui::PushID(g.name.c_str());
-    ImGui::ColorButton("##sw", ImColor(canvas::mutex_color(g.name)),
-                       ImGuiColorEditFlags_NoTooltip |
-                           ImGuiColorEditFlags_NoPicker,
-                       ImVec2(12, 12));
-    ImGui::SameLine();
-    std::string label = g.name + "  (" + std::to_string(g.lanes) + " lanes, " +
-                        std::to_string(g.vertices) + " verts)";
-    if (ImGui::Selectable(label.c_str(), state.active_mutex_group == g.name))
-      state.active_mutex_group =
-          (state.active_mutex_group == g.name) ? "" : g.name;
-    ImGui::PopID();
-  }
-  if (!state.active_mutex_group.empty() && ImGui::SmallButton("Clear highlight"))
-    state.active_mutex_group.clear();
-
   const int nl = (int)state.selected_lanes.size();
   const int nv = (int)state.selected_vertices.size();
+  const bool has_sel = (nl + nv) > 0;
+  const ImGuiStyle &st = ImGui::GetStyle();
 
-  if (!state.active_mutex_group.empty()) {
-    const std::string g = state.active_mutex_group;
-    ImGui::Separator();
-    ImGui::Text("Group \"%s\"", g.c_str());
-    ImGui::TextDisabled("Canvas selection: %d lanes, %d verts", nl, nv);
-    ImGui::BeginDisabled(nl + nv == 0);
-    if (ImGui::Button("Add selected to this group"))
-      set_on_selection(g);
-    if (ImGui::Button("Remove selected from any group"))
-      set_on_selection("");
-    ImGui::EndDisabled();
-    ImGui::SetNextItemWidth(140);
-    ImGui::InputTextWithHint("##rename", "rename to", &state.mutex_rename_buf);
-    ImGui::SameLine();
-    if (ImGui::Button("Rename group") && !state.mutex_rename_buf.empty() &&
-        state.mutex_rename_buf != g) {
-      retag_group(g, state.mutex_rename_buf);
-      state.active_mutex_group = state.mutex_rename_buf;
-      state.mutex_rename_buf.clear();
-    }
-    if (ImGui::Button("Delete group (clear all members)")) {
-      retag_group(g, "");
-      state.active_mutex_group.clear();
+  if (groups.empty()) {
+    ImGui::TextDisabled("No groups yet.");
+  } else {
+    for (const auto &g : groups) {
+      ImGui::PushID(g.name.c_str());
+      const bool active = (state.active_mutex_group == g.name);
+      // Leading spaces make room for the swatch, drawn inside the selectable.
+      std::string label = "     " + g.name + "   " + std::to_string(g.lanes) +
+                          " lanes, " + std::to_string(g.vertices) + " verts";
+      const float avail = ImGui::GetContentRegionAvail().x;
+      const ImU32 sw_col = (ImU32)ImColor(canvas::mutex_color(g.name));
+      const ImVec2 rowp = ImGui::GetCursorScreenPos();
+      bool clicked = false;
+      if (active) {
+        const float clear_w =
+            ImGui::CalcTextSize("Clear").x + st.FramePadding.x * 2.0f;
+        float sel_w = avail - clear_w - st.ItemSpacing.x;
+        if (sel_w < 1.0f)
+          sel_w = 1.0f;
+        clicked =
+            ImGui::Selectable(label.c_str(), true, 0, ImVec2(sel_w, 0.0f));
+      } else {
+        clicked = ImGui::Selectable(label.c_str(), false);
+      }
+      {
+        const float lh = ImGui::GetTextLineHeight();
+        const float s = 11.0f;
+        const float sy = rowp.y + (lh - s) * 0.5f;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            ImVec2(rowp.x + 4.0f, sy), ImVec2(rowp.x + 4.0f + s, sy + s),
+            sw_col, 2.0f);
+      }
+      if (active) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear"))
+          state.active_mutex_group.clear();
+      }
+      if (clicked) {
+        if (active) {
+          state.active_mutex_group.clear();
+        } else {
+          state.active_mutex_group = g.name;
+          state.mutex_rename_buf = g.name;
+        }
+      }
+      ImGui::PopID();
     }
   }
 
   ImGui::Separator();
-  ImGui::BeginDisabled(nl + nv == 0);
-  ImGui::SetNextItemWidth(140);
-  ImGui::InputTextWithHint("##newgroup", "new group name",
-                           &state.mutex_new_buf);
-  ImGui::SameLine();
-  if (ImGui::Button("Create from selection") && !state.mutex_new_buf.empty()) {
-    set_on_selection(state.mutex_new_buf);
-    state.active_mutex_group = state.mutex_new_buf;
-    state.mutex_new_buf.clear();
+
+  if (!state.active_mutex_group.empty()) {
+    const std::string g = state.active_mutex_group;
+    if (ImGuiWidgets::BeginFormTable("##mutex_manage")) {
+      ImGuiWidgets::FormRow("Name");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      ImGui::InputText("##mrename", &state.mutex_rename_buf);
+      if (ImGui::IsItemDeactivatedAfterEdit() &&
+          !state.mutex_rename_buf.empty() && state.mutex_rename_buf != g) {
+        retag_group(g, state.mutex_rename_buf);
+        state.active_mutex_group = state.mutex_rename_buf;
+      }
+      ImGui::EndTable();
+    }
+    // Add/remove only the relevant items, a mixed selection enables both.
+    auto add_to = [&](const std::string &grp) {
+      for (int li : state.selected_lanes)
+        if (li >= 0 && li < (int)level.lanes.size() &&
+            get_mutex(level.lanes[li].params) != grp) {
+          level.lanes[li].params["mutex"] = ParamValue::make_string(grp);
+          yjs_op_lane_replace(level.name, li, level.lanes[li]);
+        }
+      for (int vi : state.selected_vertices)
+        if (vi >= 0 && vi < (int)level.vertices.size() &&
+            get_mutex(level.vertices[vi].params) != grp) {
+          level.vertices[vi].params["mutex"] = ParamValue::make_string(grp);
+          yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
+        }
+    };
+    auto remove_from = [&](const std::string &grp) {
+      for (int li : state.selected_lanes)
+        if (li >= 0 && li < (int)level.lanes.size() &&
+            get_mutex(level.lanes[li].params) == grp) {
+          level.lanes[li].params["mutex"] = ParamValue::make_string("");
+          yjs_op_lane_replace(level.name, li, level.lanes[li]);
+        }
+      for (int vi : state.selected_vertices)
+        if (vi >= 0 && vi < (int)level.vertices.size() &&
+            get_mutex(level.vertices[vi].params) == grp) {
+          level.vertices[vi].params["mutex"] = ParamValue::make_string("");
+          yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
+        }
+    };
+    int addable = 0, removable = 0;
+    for (int li : state.selected_lanes)
+      if (li >= 0 && li < (int)level.lanes.size())
+        (get_mutex(level.lanes[li].params) == g ? removable : addable)++;
+    for (int vi : state.selected_vertices)
+      if (vi >= 0 && vi < (int)level.vertices.size())
+        (get_mutex(level.vertices[vi].params) == g ? removable : addable)++;
+
+    if (has_sel)
+      ImGui::TextDisabled("%d to add, %d to remove", addable, removable);
+    else
+      ImGui::TextDisabled("Select lanes/vertices to assign");
+    const float full = ImGui::GetContentRegionAvail().x;
+    ImGui::BeginDisabled(addable == 0);
+    if (ImGui::Button("Add selection to group", ImVec2(full, 0.0f)))
+      add_to(g);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(removable == 0);
+    if (ImGui::Button("Remove selection from group", ImVec2(full, 0.0f)))
+      remove_from(g);
+    ImGui::EndDisabled();
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          theme::with_alpha(theme::palette::danger, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
+    if (ImGui::Button("Delete group", ImVec2(full, 0.0f)))
+      ImGui::OpenPopup("Delete group##del_mutex");
+    ImGui::PopStyleColor(2);
+    if (ImGuiWidgets::BeginModal("Delete group##del_mutex", 320.0f)) {
+      ImGui::Text("Delete group \"%s\"?", g.c_str());
+      ImGui::TextDisabled("This clears the group from all its members.");
+      const int a = ImGuiWidgets::ModalActions("Delete", "Cancel");
+      if (a == 1) {
+        retag_group(g, "");
+        state.active_mutex_group.clear();
+        ImGui::CloseCurrentPopup();
+      } else if (a == 2) {
+        ImGui::CloseCurrentPopup();
+      }
+      ImGuiWidgets::EndModal();
+    }
+  } else if (has_sel) {
+    ImGui::TextDisabled("%d lanes, %d vertices selected", nl, nv);
+    const float full = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(full);
+    ImGui::InputTextWithHint("##newgroup", "new group name",
+                             &state.mutex_new_buf);
+    ImGui::BeginDisabled(state.mutex_new_buf.empty());
+    if (ImGui::Button("Create group from selection", ImVec2(full, 0.0f))) {
+      set_on_selection(state.mutex_new_buf);
+      state.active_mutex_group = state.mutex_new_buf;
+      state.mutex_rename_buf = state.mutex_new_buf;
+      state.mutex_new_buf.clear();
+    }
+    ImGui::EndDisabled();
+  } else {
+    ImGui::TextDisabled("Select lanes/vertices, then create or pick a group.");
   }
-  ImGui::EndDisabled();
-  if (nl + nv == 0)
-    ImGui::TextDisabled("Select lanes/vertices on the canvas to assign them.");
+}
+
+// Edit one param across several elements, (mixed) when they differ.
+static void draw_multi_param_editor(
+    const std::vector<std::map<std::string, ParamValue> *> &maps,
+    const char *key, ParamType type, bool &commit) {
+  if (maps.empty())
+    return;
+  auto write_all = [&](const ParamValue &pv) {
+    for (auto *m : maps)
+      (*m)[key] = pv;
+    commit = true;
+  };
+  ImGui::PushID(key);
+  ImGuiWidgets::FormRow(key);
+
+  if (param_optional(key)) {
+    int present = 0;
+    ParamValue fp{};
+    bool have = false, val_mixed = false;
+    for (auto *m : maps) {
+      auto it = m->find(key);
+      if (it == m->end() || it->second.type != type)
+        continue;
+      ++present;
+      if (!have) {
+        fp = it->second;
+        have = true;
+      } else if (type == ParamType::INT ? it->second.i != fp.i
+                                        : it->second.d != fp.d) {
+        val_mixed = true;
+      }
+    }
+    if (present == 0) {
+      if (ImGui::Button("Set"))
+        write_all(type == ParamType::INT ? ParamValue::make_int(0)
+                                         : ParamValue::make_double(0.0));
+      ImGui::PopID();
+      return;
+    }
+    const bool mixed = val_mixed || present != (int)maps.size();
+    const float clear_w = ImGui::GetFrameHeight();
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    const float tag_w = mixed ? ImGui::CalcTextSize("(mixed)").x + sp : 0.0f;
+    float in_w = ImGuiWidgets::FormControlWidth() - clear_w - sp - tag_w;
+    if (in_w < 30.0f)
+      in_w = 30.0f;
+    ImGui::SetNextItemWidth(in_w);
+    if (type == ParamType::INT) {
+      int v = mixed ? 0 : fp.i;
+      ImGui::InputInt("##v", &v);
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        write_all(ParamValue::make_int(v));
+    } else {
+      float v = mixed ? 0.0f : (float)fp.d;
+      ImGui::InputFloat("##v", &v, 0.0f, 0.0f, "%.4f");
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        write_all(ParamValue::make_double((double)v));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_MDI_CLOSE, ImVec2(clear_w, 0.0f))) {
+      for (auto *m : maps)
+        m->erase(key);
+      commit = true;
+    }
+    if (mixed) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(mixed)");
+    }
+    ImGui::PopID();
+    return;
+  }
+
+  auto read = [&](std::map<std::string, ParamValue> *m) {
+    auto it = m->find(key);
+    ParamValue pv = (it != m->end()) ? it->second : ParamValue{};
+    if (pv.type != type) {
+      pv = ParamValue{};
+      pv.type = type;
+    }
+    return pv;
+  };
+  ParamValue first = read(maps[0]);
+  bool mixed = false;
+  for (size_t i = 1; i < maps.size() && !mixed; ++i) {
+    ParamValue pv = read(maps[i]);
+    switch (type) {
+    case ParamType::BOOL:
+      mixed = pv.b != first.b;
+      break;
+    case ParamType::INT:
+      mixed = pv.i != first.i;
+      break;
+    case ParamType::DOUBLE:
+      mixed = pv.d != first.d;
+      break;
+    default:
+      mixed = pv.s != first.s;
+      break;
+    }
+  }
+
+  ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+  switch (type) {
+  case ParamType::BOOL: {
+    if (mixed) {
+      int cur = 0;
+      const char *opts[] = {"(mixed)", "false", "true"};
+      if (ImGui::Combo("##v", &cur, opts, 3) && cur != 0)
+        write_all(ParamValue::make_bool(cur == 2));
+    } else {
+      bool v = first.b;
+      if (ImGui::Checkbox("##v", &v))
+        write_all(ParamValue::make_bool(v));
+    }
+    break;
+  }
+  case ParamType::INT: {
+    int v = mixed ? 0 : first.i;
+    ImGui::InputInt("##v", &v);
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      write_all(ParamValue::make_int(v));
+    if (mixed) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(mixed)");
+    }
+    break;
+  }
+  case ParamType::DOUBLE: {
+    float v = mixed ? 0.0f : (float)first.d;
+    ImGui::InputFloat("##v", &v, 0.0f, 0.0f, "%.3f");
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      write_all(ParamValue::make_double(v));
+    if (mixed) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(mixed)");
+    }
+    break;
+  }
+  case ParamType::STRING: {
+    std::string v = mixed ? std::string() : first.s;
+    if (mixed)
+      ImGui::InputTextWithHint("##v", "(mixed)", &v);
+    else
+      ImGui::InputText("##v", &v);
+    if (ImGui::IsItemDeactivatedAfterEdit() && (!mixed || !v.empty()))
+      write_all(ParamValue::make_string(v));
+    break;
+  }
+  }
+  ImGui::PopID();
+}
+
+static void draw_multi_orientation_combo(
+    const std::vector<std::map<std::string, ParamValue> *> &maps,
+    bool &commit) {
+  if (maps.empty())
+    return;
+  auto orient_of = [&](std::map<std::string, ParamValue> *m) -> int {
+    auto it = m->find("orientation");
+    if (it == m->end() || it->second.type != ParamType::STRING)
+      return 0;
+    if (it->second.s == "forward")
+      return 1;
+    if (it->second.s == "backward")
+      return 2;
+    return 0;
+  };
+  int common = orient_of(maps[0]);
+  bool mixed = false;
+  for (size_t i = 1; i < maps.size() && !mixed; ++i)
+    if (orient_of(maps[i]) != common)
+      mixed = true;
+  auto write_all = [&](const std::string &val) {
+    for (auto *m : maps)
+      (*m)["orientation"] = ParamValue::make_string(val);
+    commit = true;
+  };
+  ImGui::PushID("multi_orient");
+  ImGuiWidgets::FormRow("orientation");
+  ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+  if (mixed) {
+    const char *opts[] = {"(mixed)", "(none)", "forward", "backward"};
+    int cur = 0;
+    if (ImGui::Combo("##v", &cur, opts, 4) && cur != 0)
+      write_all(cur == 2 ? "forward" : cur == 3 ? "backward" : "");
+  } else {
+    const char *opts[] = {"(none)", "forward", "backward"};
+    int cur = common;
+    if (ImGui::Combo("##v", &cur, opts, 3))
+      write_all(cur == 1 ? "forward" : cur == 2 ? "backward" : "");
+  }
+  ImGui::PopID();
 }
 
 void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
   Level &level = building.levels[state.level_idx];
   const std::vector<MutexGroupInfo> mutex_groups = gather_mutex_groups(level);
 
-  bool is_layer_branch = (state.selected_layer >= 0 &&
-                          state.selected_layer < (int)level.layers.size());
   int single_vertex =
       (state.selected_vertices.size() == 1 && state.selected_vertices[0] >= 0 &&
        state.selected_vertices[0] < (int)level.vertices.size())
@@ -2630,111 +3511,42 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
        state.selected_lanes[0] < (int)level.lanes.size())
           ? state.selected_lanes[0]
           : -1;
-  if (is_layer_branch) {
+  flush_pending_layer(level, state);
+  if (state.pending_commit_vertex >= 0 &&
+      state.pending_commit_vertex != single_vertex)
     flush_pending_vertex(level, state);
+  if (state.pending_commit_lane >= 0 &&
+      state.pending_commit_lane != single_lane)
     flush_pending_lane(level, state);
-    const std::string &cur = level.layers[state.selected_layer].name;
-    if (!state.pending_commit_layer.empty() &&
-        state.pending_commit_layer != cur)
-      flush_pending_layer(level, state);
-  } else {
-    flush_pending_layer(level, state);
-    if (state.pending_commit_vertex >= 0 &&
-        state.pending_commit_vertex != single_vertex)
-      flush_pending_vertex(level, state);
-    if (state.pending_commit_lane >= 0 &&
-        state.pending_commit_lane != single_lane)
-      flush_pending_lane(level, state);
-  }
 
-  // Layer transform editor takes precedence when a layer is selected.
-  if (is_layer_branch) {
-    Layer &L = level.layers[state.selected_layer];
-    const std::string layer_name = L.name;
-    ImGui::Text("Layer: %s", L.name.c_str());
-    ImGui::TextDisabled("filename: %s", L.filename.c_str());
-    ImGui::Separator();
-    ImGui::TextDisabled("Transform (rmf semantics: meters / radians)");
-    float scale = (float)L.scale;
-    float yaw_deg = (float)(L.yaw * 180.0 / M_PI);
-    float tx = (float)L.translation_x;
-    float ty = (float)L.translation_y;
-    bool l_dirty = false, l_commit = false;
-    if (ImGui::DragFloat("scale (m/px)", &scale, 0.0005f, 0.0001f, 100.0f,
-                         "%.6f")) {
-      L.scale = scale;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::DragFloat("yaw (deg)", &yaw_deg, 0.5f, -360.0f, 360.0f,
-                         "%.2f")) {
-      L.yaw = yaw_deg * M_PI / 180.0;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::DragFloat("translation_x (m)", &tx, 0.5f)) {
-      L.translation_x = tx;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::DragFloat("translation_y (m)", &ty, 0.5f)) {
-      L.translation_y = ty;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    ImGui::Separator();
-    ImGui::TextDisabled("Color (RGBA persisted)");
-    float r = (float)L.color_r, g = (float)L.color_g, b = (float)L.color_b;
-    if (ImGui::SliderFloat("r", &r, 0.0f, 1.0f)) {
-      L.color_r = r;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::SliderFloat("g", &g, 0.0f, 1.0f)) {
-      L.color_g = g;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::SliderFloat("b", &b, 0.0f, 1.0f)) {
-      L.color_b = b;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    float a = (float)L.color_a;
-    if (ImGui::SliderFloat("a", &a, 0.0f, 1.0f)) {
-      L.color_a = a;
-      l_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      l_commit = true;
-    if (ImGui::Checkbox("visible", &L.visible))
-      l_commit = true;
-    if (l_dirty) {
-      state.pending_commit_layer = layer_name;
-      state.pending_commit_time = ImGui::GetTime();
-    }
-    if (l_commit) {
-      yjs_op_layer_set(level.name, L);
-      state.pending_commit_layer.clear();
-      state.pending_commit_time = 0.0;
-    }
+  if (!ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen))
     return;
-  }
 
   bool emitted = false;
   if (state.selected_vertices.size() > 1) {
-    ImGui::Text("Multi-select: %d vertices",
-                (int)state.selected_vertices.size());
-    ImGui::TextDisabled("Use Align H/V or Delete in the top bar.");
-    ImGui::TextDisabled(
-        "Shift+click to toggle. Shift while dragging snaps to axis.");
+    std::vector<int> sel;
+    for (int vi : state.selected_vertices)
+      if (vi >= 0 && vi < (int)level.vertices.size())
+        sel.push_back(vi);
+    if (!sel.empty()) {
+      ImGui::Text("%d vertices selected", (int)sel.size());
+      ImGui::Separator();
+      std::vector<std::map<std::string, ParamValue> *> maps;
+      for (int vi : sel)
+        maps.push_back(&level.vertices[vi].params);
+      bool v_commit = false;
+      if (ImGuiWidgets::BeginFormTable("##vmulti")) {
+        for (const auto &spec : kVertexParams) {
+          if (std::strcmp(spec.key, "mutex") == 0)
+            continue;
+          draw_multi_param_editor(maps, spec.key, spec.type, v_commit);
+        }
+        ImGui::EndTable();
+      }
+      if (v_commit)
+        for (int vi : sel)
+          yjs_op_vertex_replace(level.name, vi, level.vertices[vi]);
+    }
     emitted = true;
   } else if (single_vertex >= 0) {
     int vi = single_vertex;
@@ -2742,31 +3554,45 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     ImGui::Text("Vertex #%d", vi);
     ImGui::Separator();
     bool v_dirty = false, v_commit = false;
-    float xf = (float)v.x, yf = (float)v.y;
-    if (ImGui::InputFloat("x", &xf, 0.0f, 0.0f, "%.3f")) {
-      v.x = xf;
-      v_dirty = true;
+    if (ImGuiWidgets::BeginFormTable("##vprops")) {
+      ImGuiWidgets::FormRow("Name");
+      ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
+      if (ImGui::InputText("##vname", &v.name))
+        v_dirty = true;
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        v_commit = true;
+
+      ImGuiWidgets::FormRow("Position (x, y) m");
+      float xf = (float)v.x, yf = (float)v.y;
+      float half =
+          (ImGuiWidgets::FormControlWidth() - ImGui::GetStyle().ItemSpacing.x) *
+          0.5f;
+      if (half < 1.0f)
+        half = 1.0f;
+      ImGui::SetNextItemWidth(half);
+      if (ImGui::InputFloat("##vx", &xf, 0.0f, 0.0f, "%.3f")) {
+        v.x = xf;
+        v_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        v_commit = true;
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(half);
+      if (ImGui::InputFloat("##vy", &yf, 0.0f, 0.0f, "%.3f")) {
+        v.y = yf;
+        v_dirty = true;
+      }
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        v_commit = true;
+
+      for (const auto &spec : kVertexParams) {
+        if (std::strcmp(spec.key, "mutex") == 0)
+          continue;
+        draw_param_row(v.params, spec.key, spec.type, v_dirty, v_commit);
+      }
+      draw_mutex_row(v.params, mutex_groups, state, v_dirty, v_commit);
+      ImGui::EndTable();
     }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      v_commit = true;
-    if (ImGui::InputFloat("y", &yf, 0.0f, 0.0f, "%.3f")) {
-      v.y = yf;
-      v_dirty = true;
-    }
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      v_commit = true;
-    if (ImGui::InputText("name", &v.name))
-      v_dirty = true;
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      v_commit = true;
-    ImGui::Separator();
-    ImGui::TextDisabled("Attributes");
-    for (const auto &spec : kVertexParams) {
-      if (std::strcmp(spec.key, "mutex") == 0)
-        continue;
-      draw_param_editor(v.params, spec.key, spec.type, v_dirty, v_commit);
-    }
-    draw_mutex_combo(v.params, mutex_groups, v_dirty, v_commit);
     if (v_dirty) {
       state.pending_commit_vertex = vi;
       state.pending_commit_time = ImGui::GetTime();
@@ -2787,14 +3613,17 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     ImGui::Separator();
     init_default_lane_params(l);
     bool ln_dirty = false, ln_commit = false;
-    for (const auto &spec : kLaneParams) {
-      if (std::strcmp(spec.key, "orientation") == 0 ||
-          std::strcmp(spec.key, "mutex") == 0)
-        continue;
-      draw_param_editor(l.params, spec.key, spec.type, ln_dirty, ln_commit);
+    if (ImGuiWidgets::BeginFormTable("##lprops")) {
+      for (const auto &spec : kLaneParams) {
+        if (std::strcmp(spec.key, "orientation") == 0 ||
+            std::strcmp(spec.key, "mutex") == 0)
+          continue;
+        draw_param_row(l.params, spec.key, spec.type, ln_dirty, ln_commit);
+      }
+      draw_orientation_row(l.params, ln_dirty, ln_commit);
+      draw_mutex_row(l.params, mutex_groups, state, ln_dirty, ln_commit);
+      ImGui::EndTable();
     }
-    draw_orientation_combo(l.params, ln_dirty, ln_commit);
-    draw_mutex_combo(l.params, mutex_groups, ln_dirty, ln_commit);
     if (ln_dirty) {
       state.pending_commit_lane = single_lane;
       state.pending_commit_time = ImGui::GetTime();
@@ -2813,89 +3642,27 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     if (!sel.empty()) {
       if (emitted)
         ImGui::Separator();
-      ImGui::Text("Multi-select: %d lanes", (int)sel.size());
+      ImGui::Text("%d lanes selected", (int)sel.size());
       ImGui::Separator();
-
-      auto bi_of = [&](int li) -> int {
-        auto &p = level.lanes[li].params;
-        auto it = p.find("bidirectional");
-        if (it == p.end() || it->second.type != ParamType::BOOL)
-          return 1;
-        return it->second.b ? 1 : 0;
-      };
-      auto orient_of = [&](int li) -> int {
-        auto &p = level.lanes[li].params;
-        auto it = p.find("orientation");
-        if (it == p.end() || it->second.type != ParamType::STRING)
-          return 0;
-        if (it->second.s == "forward")
-          return 1;
-        if (it->second.s == "backward")
-          return 2;
-        return 0;
-      };
-      int bi_common = bi_of(sel[0]);
-      int orient_common = orient_of(sel[0]);
-      bool bi_mixed = false, orient_mixed = false;
-      for (size_t i = 1; i < sel.size(); ++i) {
-        if (bi_of(sel[i]) != bi_common)
-          bi_mixed = true;
-        if (orient_of(sel[i]) != orient_common)
-          orient_mixed = true;
+      for (int li : sel)
+        init_default_lane_params(level.lanes[li]);
+      std::vector<std::map<std::string, ParamValue> *> maps;
+      for (int li : sel)
+        maps.push_back(&level.lanes[li].params);
+      bool ln_commit = false;
+      if (ImGuiWidgets::BeginFormTable("##lmulti")) {
+        for (const auto &spec : kLaneParams) {
+          if (std::strcmp(spec.key, "orientation") == 0 ||
+              std::strcmp(spec.key, "mutex") == 0)
+            continue;
+          draw_multi_param_editor(maps, spec.key, spec.type, ln_commit);
+        }
+        draw_multi_orientation_combo(maps, ln_commit);
+        ImGui::EndTable();
       }
-
-      auto commit_all = [&]() {
+      if (ln_commit)
         for (int li : sel)
           yjs_op_lane_replace(level.name, li, level.lanes[li]);
-      };
-
-      bool vb = bi_common != 0;
-      ImGui::PushID("multi_bi");
-      if (bi_mixed) {
-        const char *opts[] = {"(mixed)", "false", "true"};
-        int cur = 0;
-        if (ImGui::Combo("bidirectional", &cur, opts, 3) && cur != 0) {
-          for (int li : sel)
-            level.lanes[li].params["bidirectional"] =
-                ParamValue::make_bool(cur == 2);
-          commit_all();
-        }
-      } else {
-        if (ImGui::Checkbox("bidirectional", &vb)) {
-          for (int li : sel)
-            level.lanes[li].params["bidirectional"] = ParamValue::make_bool(vb);
-          commit_all();
-        }
-      }
-      ImGui::PopID();
-
-      ImGui::PushID("multi_orient");
-      if (orient_mixed) {
-        const char *opts[] = {"(mixed)", "(none)", "forward", "backward"};
-        int cur = 0;
-        if (ImGui::Combo("orientation", &cur, opts, 4) && cur != 0) {
-          std::string val = (cur == 2)   ? "forward"
-                            : (cur == 3) ? "backward"
-                                         : "";
-          for (int li : sel)
-            level.lanes[li].params["orientation"] =
-                ParamValue::make_string(val);
-          commit_all();
-        }
-      } else {
-        const char *opts[] = {"(none)", "forward", "backward"};
-        int cur = orient_common;
-        if (ImGui::Combo("orientation", &cur, opts, 3)) {
-          std::string val = (cur == 1)   ? "forward"
-                            : (cur == 2) ? "backward"
-                                         : "";
-          for (int li : sel)
-            level.lanes[li].params["orientation"] =
-                ParamValue::make_string(val);
-          commit_all();
-        }
-      }
-      ImGui::PopID();
       emitted = true;
     }
   }
@@ -3007,39 +3774,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
 }
 
 void EditorView::draw_status_bar(const EditorState &state) {
-  const char *save_label = "";
-  ImU32 col = IM_COL32(180, 180, 180, 255);
-  switch (state.save_state) {
-  case SaveState::Idle:
-    save_label = "idle";
-    break;
-  case SaveState::Saving:
-    save_label = "saving…";
-    col = IM_COL32(220, 200, 100, 255);
-    break;
-  case SaveState::Saved:
-    save_label = "saved";
-    col = IM_COL32(100, 220, 120, 255);
-    break;
-  case SaveState::Conflict:
-    save_label = "conflict";
-    col = IM_COL32(255, 120, 120, 255);
-    break;
-  case SaveState::BadRequest:
-    save_label = "bad yaml";
-    col = IM_COL32(255, 120, 120, 255);
-    break;
-  case SaveState::NetworkError:
-    save_label = "net error";
-    col = IM_COL32(255, 120, 120, 255);
-    break;
-  }
-  ImGui::PushStyleColor(ImGuiCol_Text, col);
-  ImGui::Text("%s", save_label);
-  ImGui::PopStyleColor();
-  ImGui::SameLine();
-  ImGui::TextDisabled("| etag: %s",
-                      state.etag.empty() ? "-" : state.etag.c_str());
+  (void)state;
 
 #ifdef __EMSCRIPTEN__
   const char *yjs = map_editor_yjs_status();
@@ -3049,11 +3784,8 @@ void EditorView::draw_status_bar(const EditorState &state) {
                     : (std::strcmp(yjs, "connecting") == 0
                            ? IM_COL32(220, 200, 100, 255)
                            : IM_COL32(255, 120, 120, 255));
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, ycol);
-    ImGui::Text("yjs: %s%s", yjs, ok ? " (synced)" : "");
+    ImGui::Text("collab: %s%s", yjs, ok ? " (synced)" : "");
     ImGui::PopStyleColor();
     std::free((void *)yjs);
   } else if (yjs) {
@@ -3571,13 +4303,48 @@ void EditorView::handle_floor_align_input(Building &building,
 
 void EditorView::draw_version_strip(EditorState &state) {
   const bool on_snapshot = !state.snapshot_dir.empty();
-  if (on_snapshot)
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(60, 40, 30, 255));
+  // Pull up over the child spacing so no bg sliver shows above the bar.
+  ImGui::SetCursorPosY(ImGui::GetCursorPosY() -
+                       ImGui::GetStyle().ItemSpacing.y);
+  auto mix = [](const ImVec4 &a, const ImVec4 &b, float t) {
+    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                  a.z + (b.z - a.z) * t, 1.0f);
+  };
+  ImGui::PushStyleColor(
+      ImGuiCol_ChildBg,
+      on_snapshot ? mix(theme::palette::surface, theme::palette::warning, 0.30f)
+                  : theme::palette::surface);
   ImGui::BeginChild("##version_strip", ImVec2(0, 0), false,
                     ImGuiWindowFlags_NoScrollbar);
+  {
+    float row_h = ImGui::GetFrameHeight();
+    float avail_h = ImGui::GetContentRegionAvail().y;
+    if (avail_h > row_h)
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (avail_h - row_h) * 0.5f);
+  }
+  ImGui::AlignTextToFramePadding();
+  if (!state.branch.empty()) {
+    ImGui::TextUnformatted("Branch:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::BeginCombo("##branch_combo", state.branch.c_str())) {
+      for (const auto &b : state.branches) {
+        bool sel = (b == state.branch);
+        if (ImGui::Selectable(b.c_str(), sel) && b != state.branch)
+          state.branch_switch_to = b;
+      }
+      ImGui::Separator();
+      if (ImGui::SmallButton("Refresh##branchlist"))
+        state.branch_request_refresh = true;
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+  }
   ImGui::AlignTextToFramePadding();
   if (on_snapshot)
-    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "Read-only snapshot:");
+    ImGui::TextColored(theme::palette::warning, "Read-only snapshot:");
   else
     ImGui::TextUnformatted("Version:");
   ImGui::SameLine();
@@ -3615,53 +4382,34 @@ void EditorView::draw_version_strip(EditorState &state) {
     ImGui::Button("Snapshot");
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(170, 80, 60, 255));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 100, 70, 255));
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          theme::with_alpha(theme::palette::danger, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
     if (ImGui::Button("Restore to latest"))
-      ImGui::OpenPopup("##restore_confirm");
+      ImGui::OpenPopup("Restore snapshot##restore_confirm");
     ImGui::PopStyleColor(2);
   } else {
     if (ImGui::Button("Snapshot"))
       state.snapshot_request_create = true;
   }
 
-  if (ImGui::BeginPopupModal("##restore_confirm", nullptr,
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Overwrite latest with snapshot %s?",
-                state.snapshot_dir.c_str());
+  if (ImGuiWidgets::BeginModal("Restore snapshot##restore_confirm", 380.0f)) {
+    ImGui::TextWrapped("Overwrite latest with snapshot %s?",
+                       state.snapshot_dir.c_str());
     ImGui::TextDisabled("Connected users will see the restored state.");
-    ImGui::Separator();
-    if (ImGui::Button("Restore", ImVec2(120, 0))) {
+    const int a = ImGuiWidgets::ModalActions("Restore", "Cancel");
+    if (a == 1) {
       state.snapshot_request_restore = state.snapshot_dir;
       ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0)))
+    } else if (a == 2) {
       ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    }
+    ImGuiWidgets::EndModal();
   }
 
   if (!state.snapshot_status.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", state.snapshot_status.c_str());
-  }
-
-  if (!state.branch.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("| branch");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
-    if (ImGui::BeginCombo("##branch_combo", state.branch.c_str())) {
-      for (const auto &b : state.branches) {
-        bool sel = (b == state.branch);
-        if (ImGui::Selectable(b.c_str(), sel) && b != state.branch)
-          state.branch_switch_to = b;
-      }
-      ImGui::Separator();
-      if (ImGui::SmallButton("Refresh##branchlist"))
-        state.branch_request_refresh = true;
-      ImGui::EndCombo();
-    }
   }
 
   if (on_snapshot) {
@@ -3720,8 +4468,7 @@ void EditorView::draw_version_strip(EditorState &state) {
     ImGui::TextDisabled("%s", state.deploy_status.c_str());
   }
   ImGui::EndChild();
-  if (on_snapshot)
-    ImGui::PopStyleColor();
+  ImGui::PopStyleColor();
 }
 
 void set_yjs_readonly(bool v) { g_readonly = v; }

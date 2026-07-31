@@ -8,6 +8,10 @@
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/imgui.h"
 
+#include "egb_imgui/font.hpp"
+#include "egb_imgui/icons.hpp"
+#include "egb_imgui/theme.hpp"
+
 #include "model/building.hpp"
 #include "model/yaml_io.hpp"
 #include "view/editor_view.hpp"
@@ -612,7 +616,8 @@ void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
   }
   g_state.snapshot_dir = dir;
   g_active_snapshot_dir = dir;
-  if (g_view) g_view->apply_snapshot_dir(dir);
+  if (g_view)
+    g_view->apply_snapshot_dir(dir);
   imrmf::map_editor::set_yjs_readonly(true);
   g_state.snapshot_status = "viewing " + dir;
 }
@@ -621,14 +626,16 @@ void exit_snapshot_mode() {
   g_state.snapshot_dir.clear();
   g_active_snapshot_dir.clear();
   g_snapshot_building = {};
-  if (g_view) g_view->apply_snapshot_dir("");
+  if (g_view)
+    g_view->apply_snapshot_dir("");
   imrmf::map_editor::set_yjs_readonly(false);
   g_state.snapshot_status.clear();
 }
 
 void issue_snapshot_requests() {
 #ifdef __EMSCRIPTEN__
-  if (g_building_id.empty()) return;
+  if (g_building_id.empty())
+    return;
   if (g_state.snapshot_request_refresh) {
     g_state.snapshot_request_refresh = false;
     g_snapshots_dirty = true;
@@ -666,14 +673,17 @@ void issue_snapshot_requests() {
 void poll_snapshot_result() {
 #ifdef __EMSCRIPTEN__
   const char *code_c = imrmf_snap_result_code();
-  if (!code_c) return;
+  if (!code_c)
+    return;
   std::string code(code_c);
   std::free((void *)code_c);
-  if (code == "idle" || code == "busy") return;
+  if (code == "idle" || code == "busy")
+    return;
 
   const char *payload_c = imrmf_snap_result_payload();
   std::string payload = payload_c ? payload_c : "";
-  if (payload_c) std::free((void *)payload_c);
+  if (payload_c)
+    std::free((void *)payload_c);
 
   if (code == "list") {
     g_state.snapshots.clear();
@@ -687,7 +697,8 @@ void poll_snapshot_result() {
             e.dir = it["dir"].as<std::string>("");
             e.sha = it["sha"].as<std::string>("");
             e.created_at = it["created_at"].as<long long>(0);
-            if (!e.dir.empty()) g_state.snapshots.push_back(std::move(e));
+            if (!e.dir.empty())
+              g_state.snapshots.push_back(std::move(e));
           }
         }
       }
@@ -699,8 +710,10 @@ void poll_snapshot_result() {
   } else if (code == "yaml") {
     const char *dir_c = imrmf_snap_result_dir();
     std::string dir = dir_c ? dir_c : "";
-    if (dir_c) std::free((void *)dir_c);
-    if (!dir.empty()) enter_snapshot_mode(dir, payload);
+    if (dir_c)
+      std::free((void *)dir_c);
+    if (!dir.empty())
+      enter_snapshot_mode(dir, payload);
   } else if (code == "restored") {
     g_state.snapshot_status = "restored from " + payload;
     exit_snapshot_mode();
@@ -713,7 +726,8 @@ void poll_snapshot_result() {
 
 void issue_branch_requests() {
 #ifdef __EMSCRIPTEN__
-  if (g_building_id.empty()) return;
+  if (g_building_id.empty())
+    return;
   if (g_state.branch_request_refresh) {
     g_state.branch_request_refresh = false;
     g_branches_dirty = true;
@@ -722,7 +736,8 @@ void issue_branch_requests() {
     g_branches_dirty = false;
     imrmf_call_list_branches(g_server_url.c_str());
   }
-  if (!g_state.deploy_request_to.empty() && !g_state.deploy_request_dir.empty()) {
+  if (!g_state.deploy_request_to.empty() &&
+      !g_state.deploy_request_dir.empty()) {
     std::string to = g_state.deploy_request_to;
     std::string dir = g_state.deploy_request_dir;
     g_state.deploy_request_to.clear();
@@ -758,14 +773,17 @@ void issue_branch_requests() {
 void poll_branch_result() {
 #ifdef __EMSCRIPTEN__
   const char *code_c = imrmf_branch_result_code();
-  if (!code_c) return;
+  if (!code_c)
+    return;
   std::string code(code_c);
   std::free((void *)code_c);
-  if (code == "idle" || code == "busy") return;
+  if (code == "idle" || code == "busy")
+    return;
 
   const char *payload_c = imrmf_branch_result_payload();
   std::string payload = payload_c ? payload_c : "";
-  if (payload_c) std::free((void *)payload_c);
+  if (payload_c)
+    std::free((void *)payload_c);
 
   if (code == "list") {
     g_state.branches.clear();
@@ -776,7 +794,8 @@ void poll_branch_result() {
         if (arr && arr.IsSequence()) {
           for (auto it : arr) {
             std::string b = it.as<std::string>("");
-            if (!b.empty()) g_state.branches.push_back(std::move(b));
+            if (!b.empty())
+              g_state.branches.push_back(std::move(b));
           }
         }
       }
@@ -1106,6 +1125,11 @@ void poll_async_result() {
   if (g_phase == ConnPhase::BootingConfig) {
     g_locked = json_bool_field(payload, "locked");
     g_state.branch = json_string_field(payload, "branch");
+    std::string backend = json_string_field(payload, "backend");
+    if (backend == "s3")
+      g_form.kind_idx = 1;
+    else if (backend == "local")
+      g_form.kind_idx = 0;
     if (g_locked) {
       g_auto_building = json_string_field(payload, "auto_building");
       start_list_buildings();
@@ -1371,14 +1395,20 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
   imrmf::map_editor::TopBarHooks h;
   std::string summary;
   if (g_form.kind_idx == 0) {
-    summary = "Local \xC2\xB7 ";
-    summary += g_form.local_path;
+    summary = "Local";
+    if (g_form.local_path[0]) {
+      summary += " \xC2\xB7 ";
+      summary += g_form.local_path;
+    }
   } else {
-    summary = "S3 \xC2\xB7 ";
-    summary += g_form.s3_bucket;
-    if (g_form.s3_prefix[0]) {
-      summary += "/";
-      summary += g_form.s3_prefix;
+    summary = "S3";
+    if (g_form.s3_bucket[0]) {
+      summary += " \xC2\xB7 ";
+      summary += g_form.s3_bucket;
+      if (g_form.s3_prefix[0]) {
+        summary += "/";
+        summary += g_form.s3_prefix;
+      }
     }
   }
   if (!g_building_id.empty()) {
@@ -1386,6 +1416,32 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
     summary += g_building_id;
   }
   h.connection_label = std::move(summary);
+
+  std::string details;
+  auto add = [&](const char *k, const std::string &v) {
+    if (!v.empty()) {
+      details += k;
+      details += ": ";
+      details += v;
+      details += "\n";
+    }
+  };
+  add("Building", g_building_id);
+  if (g_form.kind_idx == 0) {
+    add("Backend", "Local");
+    add("Path", g_form.local_path);
+  } else {
+    add("Backend", "S3");
+    add("Bucket", g_form.s3_bucket);
+    add("Prefix", g_form.s3_prefix);
+    add("Region", g_form.s3_region);
+    add("Endpoint", g_form.s3_endpoint);
+  }
+  add("Branch", g_state.branch);
+  if (!details.empty() && details.back() == '\n')
+    details.pop_back();
+  h.details = std::move(details);
+
   h.can_disconnect = !g_locked;
   h.on_disconnect = []() {
 #ifdef __EMSCRIPTEN__
@@ -1423,7 +1479,8 @@ void frame() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
     ImGui::Begin("##imrmf_root", nullptr, wf);
     ImGui::PopStyleVar();
-    Building &shown = g_state.snapshot_dir.empty() ? g_building : g_snapshot_building;
+    Building &shown =
+        g_state.snapshot_dir.empty() ? g_building : g_snapshot_building;
     if (g_view && !shown.levels.empty()) {
       g_view->draw(shown, g_state, []() {}, build_top_bar_hooks());
     } else {
@@ -1481,6 +1538,35 @@ int main() {
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;
+
+  theme::apply();
+  theme::load_default_font(16.0f, {"Inter.ttf", "/Inter.ttf"});
+  theme::load_icons(16.0f, {ICON_MDI_CURSOR_DEFAULT,
+                            ICON_MDI_VECTOR_POINT,
+                            ICON_MDI_VECTOR_POLYLINE,
+                            ICON_MDI_WALL,
+                            ICON_MDI_DOOR,
+                            ICON_MDI_RULER,
+                            ICON_MDI_TEXTURE_BOX,
+                            ICON_MDI_VECTOR_POLYGON_VARIANT,
+                            ICON_MDI_LAYERS_EDIT,
+                            ICON_MDI_UNDO,
+                            ICON_MDI_REDO,
+                            ICON_MDI_DELETE,
+                            ICON_MDI_ALIGN_HORIZONTAL_CENTER,
+                            ICON_MDI_ALIGN_VERTICAL_CENTER,
+                            ICON_MDI_CLOSE,
+                            ICON_MDI_ACCOUNT_MULTIPLE,
+                            ICON_MDI_PLUS,
+                            ICON_MDI_MOVE_RESIZE,
+                            ICON_MDI_CHECK,
+                            ICON_MDI_LAYERS,
+                            ICON_MDI_FOLDER_OPEN,
+                            ICON_MDI_FOLDER,
+                            ICON_MDI_FILE_IMAGE,
+                            ICON_MDI_ARROW_UP,
+                            ICON_MDI_REFRESH,
+                            ICON_MDI_UPLOAD});
 
   ImGui_ImplGlfw_InitForOpenGL(g_window, true);
 #ifdef __EMSCRIPTEN__

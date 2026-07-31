@@ -30,6 +30,8 @@ cc_library(
     deps = [
         ":viewport",
         "//model",
+        "//third_party/egb_imgui:icons",
+        "//third_party/egb_imgui:theme",
         "@imgui_docking//:imgui",
     ],
 )

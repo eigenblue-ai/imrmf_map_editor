@@ -62,8 +62,8 @@ struct EditorState {
   std::vector<int> selected_measurements;
   int selected_floor = -1;
   int pending_lane_start = -1;
-  int pending_edge_start = -1;       // wall / door / measurement chain
-  std::vector<int> pending_polygon;  // floor / hole loop under construction
+  int pending_edge_start = -1;      // wall / door / measurement chain
+  std::vector<int> pending_polygon; // floor / hole loop under construction
   bool dirty = false;
 
   bool pending_vertex_delete = false;
@@ -98,6 +98,16 @@ struct EditorState {
   std::string new_layer_name;
   std::string new_layer_filename;
 
+  // Layer rename buffer, kept stable while typing so the old CRDT key is known.
+  std::string layer_name_buf;
+  int layer_name_buf_idx = -99;
+
+  bool open_layer_browse = false; // request to open the modal
+  std::string browse_subdir;      // folder within the building asset dir
+  bool browse_relist = false;     // trigger a fresh /assets/list
+  std::string browse_status;      // upload / error status line
+  std::string browse_last_upload; // name of the last upload we refreshed on
+
   int pending_commit_vertex = -1;
   int pending_commit_lane = -1;
   std::string pending_commit_layer;
@@ -118,6 +128,7 @@ struct EditorState {
   std::string active_mutex_group; // selected group, highlighted on canvas
   std::string mutex_rename_buf;   // rename input
   std::string mutex_new_buf;      // new-group input
+  bool mutex_adding = false;      // mutex row: adding a new group inline
 
   struct SnapshotEntry {
     std::string dir;
@@ -146,6 +157,7 @@ struct EditorState {
 
 struct TopBarHooks {
   std::string connection_label;
+  std::string details; // multi-line connection info for the tooltip + modal
   bool can_disconnect = false;
   std::function<void()> on_disconnect;
 };
@@ -179,6 +191,7 @@ private:
   void draw_building_panel(Building &building, EditorState &state);
   void draw_add_layer_section(Building &building, EditorState &state);
   void draw_layer_config_panel(Building &building, EditorState &state);
+  void draw_layer_browse_modal(Building &building, EditorState &state);
   void draw_attribute_panel(Building &building, EditorState &state);
   void draw_mutex_groups_panel(Building &building, EditorState &state);
   void draw_status_bar(const EditorState &state);

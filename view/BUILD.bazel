@@ -20,6 +20,8 @@ cc_library(
         "//canvas",
         "//canvas:http_texture_provider",
         "//model",
+        "//third_party/egb_imgui:icons",
+        "//third_party/egb_imgui:widgets",
         "@imgui_docking//:imgui",
         "@imgui_docking//:imgui_stdlib",
     ],

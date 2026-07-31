@@ -93,6 +93,7 @@ pub async fn run(
         .route("/validation_status", get(validation_status_handler))
         .route("/revert_to_last_valid", post(revert_handler))
         .route("/fs/list", get(fs_list_handler))
+        .route("/assets/list", get(assets_list_handler))
         .layer(cors)
         .with_state(routed_state);
 
@@ -713,6 +714,40 @@ async fn fs_list_handler(Query(q): Query<FsListQuery>, State(rs): State<RouteSta
         .header(header::CONTENT_TYPE, "application/json")
         .body(body.to_string().into())
         .unwrap()
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetsListQuery {
+    id: String,
+    #[serde(default)]
+    subdir: String,
+}
+
+async fn assets_list_handler(
+    Query(q): Query<AssetsListQuery>,
+    State(rs): State<RouteState>,
+) -> Response {
+    if !id_safe(&q.id) {
+        return (StatusCode::BAD_REQUEST, "invalid id").into_response();
+    }
+    if q.subdir.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid subdir").into_response();
+    }
+    let Some(storage) = rs.app.storage().await else {
+        return (StatusCode::CONFLICT, "no backend mounted").into_response();
+    };
+    match storage.list_assets(&q.id, &q.subdir).await {
+        Ok(entries) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "subdir": q.subdir, "entries": entries })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("list assets: {e:#}"),
+        )
+            .into_response(),
+    }
 }
 
 fn id_safe(id: &str) -> bool {

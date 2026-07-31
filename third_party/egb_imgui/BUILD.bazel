@@ -1,0 +1,110 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# All targets expose their headers under the egb_imgui/ prefix regardless of
+# where this package sits, so `#include "egb_imgui/theme.hpp"` works the same
+# whether egb_imgui is a bazel module or vendored into another repo's tree.
+
+# Brand palette + ImGui style. ImGui only.
+cc_library(
+    name = "theme",
+    hdrs = ["egb_imgui/theme.hpp"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+# Form-table layout helpers + segmented control. ImGui only.
+cc_library(
+    name = "widgets",
+    hdrs = ["egb_imgui/widgets.hpp"],
+    strip_include_prefix = ".",
+    deps = [
+        ":theme",
+        "@imgui_docking//:imgui",
+    ],
+)
+
+# Bundled Inter font + a loader. Add :fonts to your binary's data.
+cc_library(
+    name = "font",
+    hdrs = ["egb_imgui/font.hpp"],
+    data = [":fonts"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+# The ImGui-only core in one dep.
+cc_library(
+    name = "core",
+    deps = [
+        ":font",
+        ":theme",
+        ":widgets",
+    ],
+)
+
+# Opt-in: schema-driven form UI. Pulls in nlohmann_json, so it is kept out of
+# the core for consumers that do not want the JSON dependency.
+cc_library(
+    name = "schema_ui",
+    srcs = ["egb_imgui/schema_ui.cpp"],
+    hdrs = ["egb_imgui/schema_ui.hpp"],
+    strip_include_prefix = ".",
+    deps = [
+        ":widgets",
+        "@imgui_docking//:imgui",
+        "@nlohmann_json//:json",
+    ],
+)
+
+# Edge flood-fill to knock out a white background. No ImGui, no other deps.
+cc_library(
+    name = "image_utils",
+    hdrs = ["egb_imgui/image_utils.hpp"],
+    strip_include_prefix = ".",
+)
+
+# Vendored stb_image / stb_image_write.
+cc_library(
+    name = "stb_image",
+    srcs = ["egb_imgui/stb_image_impl.cpp"],
+    hdrs = [
+        "egb_imgui/stb_image.h",
+        "egb_imgui/stb_image_write.h",
+    ],
+    strip_include_prefix = ".",
+)
+
+filegroup(
+    name = "fonts",
+    srcs = [
+        "egb_imgui/fonts/Inter.ttf",
+        "egb_imgui/fonts/OFL.txt",
+    ],
+)
+
+# Just the .ttf, for a single-file reference like an emscripten --preload-file.
+filegroup(
+    name = "font_ttf",
+    srcs = ["egb_imgui/fonts/Inter.ttf"],
+)
+
+# Material Design Icons (Apache-2.0) as an icon font. ICON_MDI_* macros + a
+# merge-load helper. Needs ImGui built with IMGUI_USE_WCHAR32 (MDI codepoints
+# are above U+FFFF).
+cc_library(
+    name = "icons",
+    hdrs = [
+        "egb_imgui/IconsMaterialDesignIcons.h",
+        "egb_imgui/icons.hpp",
+    ],
+    data = [":font_mdi"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+filegroup(
+    name = "font_mdi",
+    srcs = ["egb_imgui/fonts/materialdesignicons-webfont.ttf"],
+)

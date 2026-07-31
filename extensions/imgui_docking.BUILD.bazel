@@ -23,6 +23,10 @@ cc_library(
         "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
         "//conditions:default": [],
     }),
+    # MDI icon glyphs live above U+FFFF, so ImWchar must be 32-bit. This
+    # propagates to every target that depends on imgui, keeping the ABI the same
+    # everywhere.
+    defines = ["IMGUI_USE_WCHAR32"],
     include_prefix = "imgui",
     includes = ["."],
     linkopts = [],

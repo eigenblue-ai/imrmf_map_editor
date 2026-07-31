@@ -223,6 +223,8 @@ void fill_simple_polygon(ImDrawList *dl, std::vector<ImVec2> pts, ImU32 col) {
     dl->AddTriangleFilled(pts[idx[0]], pts[idx[1]], pts[idx[2]], col);
 }
 
+constexpr float kVertexNameMinScale = 1.0f;
+
 } // namespace
 
 TextureProvider::~TextureProvider() {
@@ -403,9 +405,7 @@ void MapCanvas::draw(const Building &building, int level_idx,
     }
   }
 
-  auto vtx_ok = [&](int i) {
-    return i >= 0 && i < (int)level.vertices.size();
-  };
+  auto vtx_ok = [&](int i) { return i >= 0 && i < (int)level.vertices.size(); };
 
   if (opts.draw_floors) {
     for (const Floor &f : level.floors) {
@@ -416,8 +416,8 @@ void MapCanvas::draw(const Building &building, int level_idx,
           ok = false;
           break;
         }
-        pts.push_back(world_to_screen(level.vertices[vi].x,
-                                      level.vertices[vi].y));
+        pts.push_back(
+            world_to_screen(level.vertices[vi].x, level.vertices[vi].y));
       }
       if (!ok)
         continue;
@@ -433,8 +433,8 @@ void MapCanvas::draw(const Building &building, int level_idx,
             hok = false;
             break;
           }
-          hp.push_back(world_to_screen(level.vertices[vi].x,
-                                       level.vertices[vi].y));
+          hp.push_back(
+              world_to_screen(level.vertices[vi].x, level.vertices[vi].y));
         }
         if (hok)
           draw_list_->AddPolyline(hp.data(), (int)hp.size(),
@@ -495,7 +495,6 @@ void MapCanvas::draw(const Building &building, int level_idx,
         chevron(mid.x + tx * 4.0f, mid.y + ty * 4.0f);
         chevron(mid.x - tx * 4.0f, mid.y - ty * 4.0f);
       } else if (orient != 0 && len > 1e-3f) {
-        // bidirectional + orientation: filled triangle along the constrained dir
         float ux = dx / len * orient, uy = dy / len * orient;
         float px = -uy, py = ux;
         const float lng = 16.0f, wid = 12.0f;
@@ -519,22 +518,21 @@ void MapCanvas::draw(const Building &building, int level_idx,
                                  level.vertices[d.end_idx].y);
       const ImU32 col = IM_COL32(235, 150, 40, 240);
       draw_list_->AddLine(a, b, col, 3.0f);
-      float len = std::sqrt((b.x - a.x) * (b.x - a.x) +
-                            (b.y - a.y) * (b.y - a.y));
+      float len =
+          std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
       if (len > 1.0f) {
         double deg = 90.0;
         double dir = 1.0;
         auto pd = d.params.find("motion_degrees");
         if (pd != d.params.end())
-          deg = pd->second.type == ParamType::INT ? pd->second.i
-                                                   : pd->second.d;
+          deg = pd->second.type == ParamType::INT ? pd->second.i : pd->second.d;
         auto pdir = d.params.find("motion_direction");
         if (pdir != d.params.end() && pdir->second.type == ParamType::INT &&
             pdir->second.i < 0)
           dir = -1.0;
         float base = std::atan2(b.y - a.y, b.x - a.x);
-        float sweep = (float)(deg * 3.14159265358979323846 / 180.0) *
-                      (float)dir;
+        float sweep =
+            (float)(deg * 3.14159265358979323846 / 180.0) * (float)dir;
         draw_list_->PathArcTo(a, len, base, base + sweep, 16);
         draw_list_->PathStroke(IM_COL32(235, 150, 40, 130), 0, 1.5f);
       }
@@ -566,13 +564,13 @@ void MapCanvas::draw(const Building &building, int level_idx,
       }
       auto pd = m.params.find("distance");
       if (pd != m.params.end()) {
-        double meters = pd->second.type == ParamType::INT ? pd->second.i
-                                                          : pd->second.d;
+        double meters =
+            pd->second.type == ParamType::INT ? pd->second.i : pd->second.d;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.2f m", meters);
-        draw_list_->AddText(ImVec2((a.x + b.x) * 0.5f + 4.0f,
-                                   (a.y + b.y) * 0.5f - 14.0f),
-                            col, buf);
+        draw_list_->AddText(
+            ImVec2((a.x + b.x) * 0.5f + 4.0f, (a.y + b.y) * 0.5f - 14.0f), col,
+            buf);
       }
     }
   }
@@ -591,7 +589,8 @@ void MapCanvas::draw(const Building &building, int level_idx,
         }
       }
       draw_list_->AddCircleFilled(p, vr, vc);
-      if (opts.show_vertex_names && !v.name.empty()) {
+      if (opts.show_vertex_names && !v.name.empty() &&
+          view_state_.scale >= kVertexNameMinScale) {
         draw_list_->AddText(ImVec2(p.x + 6.0f, p.y - 8.0f),
                             IM_COL32(220, 220, 220, 255), v.name.c_str());
       }

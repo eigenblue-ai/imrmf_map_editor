@@ -7,7 +7,11 @@ cc_binary(
     name = "editor_wasm_target",
     srcs = ["main.cpp"],
     additional_linker_inputs = select({
-        "//config:wasm": ["shell_minimal.html"],
+        "//config:wasm": [
+            "shell_minimal.html",
+            "//third_party/egb_imgui:font_ttf",
+            "//third_party/egb_imgui:font_mdi",
+        ],
         "//conditions:default": [],
     }),
     copts = select({
@@ -28,6 +32,8 @@ cc_binary(
             "-sALLOW_MEMORY_GROWTH=1",
             "-sFETCH=1",
             "-sFORCE_FILESYSTEM=1",
+            "--preload-file=$(location //third_party/egb_imgui:font_ttf)@Inter.ttf",
+            "--preload-file=$(location //third_party/egb_imgui:font_mdi)@materialdesignicons-webfont.ttf",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
             "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded",
         ],
@@ -39,6 +45,8 @@ cc_binary(
     }),
     deps = [
         "//model",
+        "//third_party/egb_imgui:core",
+        "//third_party/egb_imgui:icons",
         "//view",
         "@imgui_docking//:imgui",
         "@imgui_docking//:platform-glfw",

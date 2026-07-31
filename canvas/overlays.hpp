@@ -14,8 +14,18 @@ namespace imrmf::map_editor::canvas {
 
 struct LayersOverlayState {
   bool expanded = false;
+  bool view_expanded = false;
   int selected_layer = -1;
   bool pending_reorder_commit = false;
+};
+
+// View-toggle flags. A null member hides its checkbox, all-null hides View.
+struct OverlayViewSettings {
+  bool *show_fiducials = nullptr;
+  bool *show_floors = nullptr;
+  bool *show_walls = nullptr;
+  bool *show_doors = nullptr;
+  bool *show_measurements = nullptr;
 };
 
 // Editor wires these to its CRDT writers
@@ -35,7 +45,7 @@ void draw_layers_overlay(
     std::unordered_map<std::string, FloorplanSession> &fp_sessions,
     std::unordered_map<std::string, LayerSession> &layer_sessions,
     LayersOverlayState &state, const MapCanvas &canvas,
-    const LayerEditCallbacks &cb = {});
+    const LayerEditCallbacks &cb = {}, const OverlayViewSettings &view = {});
 
 // xf is optional: when non-null, the canvas-world pixel is first mapped back
 // to the reference level via tgt_to_ref before the rmf-meter computation.

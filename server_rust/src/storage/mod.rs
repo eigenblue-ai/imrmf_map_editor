@@ -41,6 +41,10 @@ pub trait Storage: Send + Sync {
     /// Write a layer asset. Used by PUT /layer_asset (e.g. TopView captures).
     async fn write_asset(&self, building_id: &str, path: &str, bytes: Bytes) -> Result<()>;
 
+    /// List files/folders under a building's asset dir (optionally a subdir).
+    /// Skips the yaml, snapshots, and dotfiles.
+    async fn list_assets(&self, building_id: &str, subdir: &str) -> Result<Vec<AssetEntry>>;
+
     /// ETag for an asset, for conditional GET. None disables revalidation.
     async fn asset_etag(&self, _building_id: &str, _path: &str) -> Result<Option<String>> {
         Ok(None)
@@ -84,6 +88,13 @@ pub trait Storage: Send + Sync {
     /// Copies the mounted branch's live map (yaml + assets, no snapshots) onto
     /// dst_branch's live map. Promotes the current state directly.
     async fn deploy_latest(&self, building_id: &str, dst_branch: &str) -> Result<()>;
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AssetEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 // dir is the on-disk/S3 folder ("<unix_secs>-<short_sha>"). Parsed back via

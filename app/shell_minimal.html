@@ -103,6 +103,10 @@
       var loadingElement = document.getElementById("loading");
       var Module = {
         canvas: document.getElementById("canvas"),
+        // Cache-bust so a plain reload gets the latest build.
+        locateFile: function (path, prefix) {
+          return prefix + path + "?v=" + Date.now();
+        },
         print: function (t) {
           console.log(t);
         },
@@ -344,6 +348,7 @@
           layerSet: () => {},
           layerDelete: () => {},
           layerReorder: () => {},
+          drawingSet: () => {},
           fiducialAdd: () => {},
           fiducialReplace: () => {},
           fiducialDelete: () => {},
@@ -537,7 +542,10 @@
           const arr = level.get("floors");
           if (!arr) return;
           const reLoop = (loop) =>
-            (loop || []).map(Number).filter((v) => v !== idx).map((v) => (v > idx ? v - 1 : v));
+            (loop || [])
+              .map(Number)
+              .filter((v) => v !== idx)
+              .map((v) => (v > idx ? v - 1 : v));
           for (let i = arr.length - 1; i >= 0; --i) {
             const fm = arr.get(i);
             const f = fm && fm.toJSON ? fm.toJSON() : null;
@@ -547,7 +555,9 @@
               arr.delete(i, 1);
               continue;
             }
-            const holes = (f.holes || []).map(reLoop).filter((h) => h.length >= 3);
+            const holes = (f.holes || [])
+              .map(reLoop)
+              .filter((h) => h.length >= 3);
             const nf = Object.assign({}, f, { vertices: verts });
             if (holes.length) nf.holes = holes;
             else delete nf.holes;
@@ -670,6 +680,12 @@
             layers.delete(layerName);
           }, "local");
         }
+        function drawingSet(levelName, filename) {
+          doc.transact(() => {
+            const drawing = getOrCreateMap(getLevel(levelName), "drawing");
+            drawing.set("filename", filename);
+          }, "local");
+        }
         function fiducialAdd(levelName, fiducialYaml) {
           const parsed = parseYamlOrLog(fiducialYaml, "fiducial");
           if (!Array.isArray(parsed)) return;
@@ -761,6 +777,7 @@
           layerSet,
           layerDelete,
           layerReorder,
+          drawingSet,
           fiducialAdd,
           fiducialReplace,
           fiducialDelete,

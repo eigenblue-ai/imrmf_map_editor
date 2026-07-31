@@ -3,6 +3,8 @@
 
 #include "canvas/overlays.hpp"
 
+#include "egb_imgui/icons.hpp"
+#include "egb_imgui/theme.hpp"
 #include "imgui/imgui.h"
 
 #include <algorithm>
@@ -12,11 +14,31 @@ namespace imrmf::map_editor::canvas {
 
 namespace {
 
-constexpr float kOverlayBgAlpha = 0.65f;
-constexpr float kOverlayPadding = 8.0f;
+constexpr float kOverlayPadding = theme::metrics::overlay_edge;
+constexpr float kOverlayRounding = theme::metrics::rounding;
+inline ImVec2 overlay_inner_pad() {
+  return ImVec2(theme::metrics::overlay_pad_x, theme::metrics::overlay_pad_y);
+}
 constexpr ImGuiWindowFlags kOverlayWinFlags =
     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+
+// Themed overlay card, pair with end_overlay_card().
+void begin_overlay_card(const char *id, ImVec2 size,
+                        ImGuiChildFlags extra_flags) {
+  ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                        theme::with_alpha(theme::palette::surface, 0.92f));
+  ImGui::PushStyleColor(ImGuiCol_Border, theme::palette::border);
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kOverlayRounding);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, overlay_inner_pad());
+  ImGui::BeginChild(id, size, extra_flags | ImGuiChildFlags_Border,
+                    kOverlayWinFlags);
+}
+void end_overlay_card() {
+  ImGui::EndChild();
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor(2);
+}
 
 } // namespace
 
@@ -30,16 +52,13 @@ bool draw_level_selector_overlay(const Building &building, int &level_idx,
   ImVec2 saved = ImGui::GetCursorScreenPos();
   ImGui::SetCursorScreenPos(
       ImVec2(cp.x + kOverlayPadding, cp.y + kOverlayPadding));
-  ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                        ImVec4(0.05f, 0.05f, 0.05f, kOverlayBgAlpha));
-  ImGui::BeginChild("##canvas_level_overlay", ImVec2(0, 0),
-                    ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY,
-                    kOverlayWinFlags);
+  begin_overlay_card("##canvas_level_overlay", ImVec2(0, 0),
+                     ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
 
-  ImGui::TextUnformatted(building.name.empty() ? "Building"
-                                               : building.name.c_str());
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("Floor");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(120.0f);
+  ImGui::SetNextItemWidth(150.0f);
 
   bool changed = false;
   const std::string &current = building.levels[level_idx].name;
@@ -58,8 +77,7 @@ bool draw_level_selector_overlay(const Building &building, int &level_idx,
     ImGui::EndCombo();
   }
 
-  ImGui::EndChild();
-  ImGui::PopStyleColor();
+  end_overlay_card();
   ImGui::SetCursorScreenPos(saved);
   return changed;
 }
@@ -69,7 +87,7 @@ void draw_layers_overlay(
     std::unordered_map<std::string, FloorplanSession> &fp_sessions,
     std::unordered_map<std::string, LayerSession> &layer_sessions,
     LayersOverlayState &state, const MapCanvas &canvas,
-    const LayerEditCallbacks &cb) {
+    const LayerEditCallbacks &cb, const OverlayViewSettings &view) {
   if (building.levels.empty())
     return;
   level_idx = std::clamp(level_idx, 0, (int)building.levels.size() - 1);
@@ -78,152 +96,132 @@ void draw_layers_overlay(
 
   ImVec2 cp = canvas.canvas_pos();
   ImVec2 cs = canvas.canvas_size();
-  float panel_w = state.expanded ? 280.0f : 90.0f;
+  const float btn_sz = ImGui::GetFrameHeight() + 8.0f;
+  const float gap = 4.0f;
   ImVec2 saved = ImGui::GetCursorScreenPos();
-  ImGui::SetCursorScreenPos(
-      ImVec2(cp.x + cs.x - panel_w - kOverlayPadding, cp.y + kOverlayPadding));
-  ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                        ImVec4(0.05f, 0.05f, 0.05f, kOverlayBgAlpha));
-  ImGui::BeginChild("##canvas_layers_overlay", ImVec2(panel_w, 0),
-                    ImGuiChildFlags_AutoResizeY, kOverlayWinFlags);
+  const bool has_view = (view.show_floors != nullptr);
 
-  if (ImGui::Button(state.expanded ? "Layers v" : "Layers >")) {
+  ImVec2 tb(cp.x + cs.x - btn_sz - kOverlayPadding, cp.y + kOverlayPadding);
+  ImGui::SetCursorScreenPos(tb);
+  if (ImGui::Button(ICON_MDI_LAYERS, ImVec2(btn_sz, btn_sz))) {
     state.expanded = !state.expanded;
+    state.view_expanded = false;
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Layers");
+  if (has_view) {
+    ImGui::SetCursorScreenPos(ImVec2(tb.x, tb.y + btn_sz + gap));
+    if (ImGui::Button(ICON_MDI_EYE, ImVec2(btn_sz, btn_sz))) {
+      state.view_expanded = !state.view_expanded;
+      state.expanded = false;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("View settings");
   }
 
   if (state.expanded) {
-    ImGui::Separator();
+    const float pane_w = 280.0f;
+    ImGui::SetCursorScreenPos(
+        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding));
+    begin_overlay_card("##canvas_layers_overlay", ImVec2(pane_w, 0),
+                       ImGuiChildFlags_AutoResizeY);
 
-    FloorplanSession &fps = fp_sessions[level.name];
-    ImGui::PushID("__fp");
-    ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "Floorplan");
-    ImGui::Indent(8.0f);
-    ImGui::Checkbox("visible##fp", &fps.visible);
-    ImGui::SameLine();
-    ImGui::Checkbox("invert##fp", &fps.invert);
-    ImGui::SetNextItemWidth(-1);
-    ImGui::SliderFloat("##fp_alpha", &fps.alpha, 0.0f, 1.0f, "alpha %.2f");
-    ImGui::Unindent(8.0f);
-    ImGui::PopID();
-    ImGui::Separator();
-
-    for (int i = 0; i < (int)level.layers.size(); ++i) {
-      Layer &L = level.layers[i];
-      LayerSession &sess = layer_sessions[level.name + ":" + L.name];
-
-      ImGui::PushID(i);
-
-      char row[160];
-      std::snprintf(row, sizeof(row), "%s##row", L.name.c_str());
-      bool selected_row = (state.selected_layer == i);
-      if (ImGui::Selectable(
-              row, &selected_row, ImGuiSelectableFlags_AllowItemOverlap,
-              ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() + 2.0f))) {
-        state.selected_layer = selected_row ? i : -1;
-      }
-
-      if (editable && cb.on_layer_reorder && ImGui::IsItemActive() &&
-          !ImGui::IsItemHovered()) {
-        int next = i + (ImGui::GetMouseDragDelta(0).y < 0.0f ? -1 : 1);
-        if (next >= 0 && next < (int)level.layers.size()) {
-          std::swap(level.layers[i], level.layers[next]);
-          if (state.selected_layer == i)
-            state.selected_layer = next;
-          else if (state.selected_layer == next)
-            state.selected_layer = i;
-          state.pending_reorder_commit = true;
-          ImGui::ResetMouseDragDelta();
-        }
-      }
-
-      ImGui::Indent(8.0f);
-
-      bool vis = sess.visible.has_value() ? *sess.visible : L.visible;
-      if (ImGui::Checkbox("visible", &vis)) {
-        if (editable) {
-          L.visible = vis;
-          if (cb.on_layer_commit)
-            cb.on_layer_commit(L);
-        } else {
-          sess.visible = vis;
-        }
-      }
+    {
+      FloorplanSession &fps = fp_sessions[level.name];
+      ImGui::PushID("__fp");
+      ImGui::TextUnformatted("Floorplan");
+      ImGui::Checkbox("visible##fp", &fps.visible);
       ImGui::SameLine();
-      ImGui::Checkbox("invert", &sess.invert);
-
-      float col[3] = {
-          sess.color_r ? *sess.color_r : (float)L.color_r,
-          sess.color_g ? *sess.color_g : (float)L.color_g,
-          sess.color_b ? *sess.color_b : (float)L.color_b,
-      };
+      ImGui::Checkbox("invert##fp", &fps.invert);
       ImGui::SetNextItemWidth(-1);
-      bool color_changed = ImGui::ColorEdit3("##color", col,
-                                             ImGuiColorEditFlags_NoInputs |
-                                                 ImGuiColorEditFlags_NoLabel);
-      if (color_changed) {
-        if (editable) {
-          L.color_r = col[0];
-          L.color_g = col[1];
-          L.color_b = col[2];
-        } else {
-          sess.color_r = col[0];
-          sess.color_g = col[1];
-          sess.color_b = col[2];
-        }
-      }
-      if (editable && cb.on_layer_commit &&
-          ImGui::IsItemDeactivatedAfterEdit()) {
-        cb.on_layer_commit(L);
-      }
-
-      float alpha = sess.alpha ? *sess.alpha : (float)L.color_a;
-      ImGui::SetNextItemWidth(-1);
-      bool alpha_changed =
-          ImGui::SliderFloat("##alpha", &alpha, 0.0f, 1.0f, "alpha %.2f");
-      if (alpha_changed) {
-        if (editable) {
-          L.color_a = alpha;
-        } else {
-          sess.alpha = alpha;
-        }
-      }
-      if (editable && cb.on_layer_commit &&
-          ImGui::IsItemDeactivatedAfterEdit()) {
-        cb.on_layer_commit(L);
-      }
-
-      if (editable && cb.on_layer_delete) {
-        if (ImGui::SmallButton("Delete")) {
-          std::string name = L.name;
-          ImGui::Unindent(8.0f);
-          ImGui::PopID();
-          ImGui::Separator();
-          cb.on_layer_delete(name);
-          ImGui::EndChild();
-          ImGui::PopStyleColor();
-          ImGui::SetCursorScreenPos(saved);
-          return;
-        }
-      }
-
-      ImGui::Unindent(8.0f);
+      ImGui::SliderFloat("##fp_alpha", &fps.alpha, 0.0f, 1.0f, "alpha %.2f");
       ImGui::PopID();
       ImGui::Separator();
+
+      for (int i = 0; i < (int)level.layers.size(); ++i) {
+        Layer &L = level.layers[i];
+        LayerSession &sess = layer_sessions[level.name + ":" + L.name];
+
+        ImGui::PushID(i);
+        ImGui::TextUnformatted(L.name.c_str());
+
+        float col[4] = {
+            sess.color_r ? *sess.color_r : (float)L.color_r,
+            sess.color_g ? *sess.color_g : (float)L.color_g,
+            sess.color_b ? *sess.color_b : (float)L.color_b,
+            sess.alpha ? *sess.alpha : (float)L.color_a,
+        };
+        if (ImGui::ColorEdit4("##color", col,
+                              ImGuiColorEditFlags_NoInputs |
+                                  ImGuiColorEditFlags_NoLabel |
+                                  ImGuiColorEditFlags_AlphaBar |
+                                  ImGuiColorEditFlags_AlphaPreviewHalf)) {
+          if (editable) {
+            L.color_r = col[0];
+            L.color_g = col[1];
+            L.color_b = col[2];
+            L.color_a = col[3];
+          } else {
+            sess.color_r = col[0];
+            sess.color_g = col[1];
+            sess.color_b = col[2];
+            sess.alpha = col[3];
+          }
+        }
+        if (editable && cb.on_layer_commit &&
+            ImGui::IsItemDeactivatedAfterEdit())
+          cb.on_layer_commit(L);
+        ImGui::SameLine();
+        bool vis = sess.visible.has_value() ? *sess.visible : L.visible;
+        if (ImGui::Checkbox("visible", &vis)) {
+          if (editable) {
+            L.visible = vis;
+            if (cb.on_layer_commit)
+              cb.on_layer_commit(L);
+          } else {
+            sess.visible = vis;
+          }
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("invert", &sess.invert);
+
+        ImGui::PopID();
+        ImGui::Separator();
+      }
+
+      if (editable && cb.on_layer_reorder && state.pending_reorder_commit &&
+          ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        std::vector<std::string> order;
+        order.reserve(level.layers.size());
+        for (const Layer &q : level.layers)
+          order.push_back(q.name);
+        cb.on_layer_reorder(order);
+        state.pending_reorder_commit = false;
+      }
     }
 
-    if (editable && cb.on_layer_reorder && state.pending_reorder_commit &&
-        ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-      std::vector<std::string> order;
-      order.reserve(level.layers.size());
-      for (const Layer &q : level.layers)
-        order.push_back(q.name);
-      cb.on_layer_reorder(order);
-      state.pending_reorder_commit = false;
-    }
+    end_overlay_card();
   }
 
-  ImGui::EndChild();
-  ImGui::PopStyleColor();
+  if (has_view && state.view_expanded) {
+    const float pane_w = 200.0f;
+    ImGui::SetCursorScreenPos(
+        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding));
+    begin_overlay_card("##canvas_view_overlay", ImVec2(pane_w, 0),
+                       ImGuiChildFlags_AutoResizeY);
+    if (view.show_fiducials)
+      ImGui::Checkbox("Fiducials", view.show_fiducials);
+    if (view.show_floors)
+      ImGui::Checkbox("Floors", view.show_floors);
+    if (view.show_walls)
+      ImGui::Checkbox("Walls", view.show_walls);
+    if (view.show_doors)
+      ImGui::Checkbox("Doors", view.show_doors);
+    if (view.show_measurements)
+      ImGui::Checkbox("Measurements", view.show_measurements);
+    end_overlay_card();
+  }
+
   ImGui::SetCursorScreenPos(saved);
 }
 
@@ -238,20 +236,26 @@ void draw_mouse_coord_hud(const MapCanvas &c, double ref_mpp,
   double rx = px, ry = py;
   if (xf) {
     auto p = tgt_to_ref(*xf, px, py);
-    rx = p.first; ry = p.second;
+    rx = p.first;
+    ry = p.second;
   }
   double eff = ref_mpp > 0.0 ? ref_mpp : 1.0;
-  char buf[160];
+  char buf[192];
   std::snprintf(buf, sizeof(buf),
-                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)", px, py,
-                rx * eff, -ry * eff);
+                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)  |  zoom %.0f%%", px,
+                py, rx * eff, -ry * eff, (double)c.view_state().scale * 100.0);
   ImVec2 sz = ImGui::CalcTextSize(buf);
-  ImVec2 pos(cp.x + 8.0f, cp.y + cs.y - sz.y - 8.0f);
+  ImVec2 pos(cp.x + kOverlayPadding + 8.0f,
+             cp.y + cs.y - sz.y - kOverlayPadding - 5.0f);
   ImDrawList *dl = c.draw_list();
-  dl->AddRectFilled(ImVec2(pos.x - 4, pos.y - 2),
-                    ImVec2(pos.x + sz.x + 4, pos.y + sz.y + 2),
-                    IM_COL32(0, 0, 0, 180), 3.0f);
-  dl->AddText(pos, IM_COL32(220, 220, 220, 255), buf);
+  ImVec2 r0(pos.x - 8, pos.y - 5), r1(pos.x + sz.x + 8, pos.y + sz.y + 5);
+  dl->AddRectFilled(
+      r0, r1,
+      ImGui::GetColorU32(theme::with_alpha(theme::palette::surface, 0.92f)),
+      kOverlayRounding);
+  dl->AddRect(r0, r1, ImGui::GetColorU32(theme::palette::border),
+              kOverlayRounding);
+  dl->AddText(pos, ImGui::GetColorU32(theme::palette::text), buf);
 }
 
 void draw_mouse_coord_hud(const MapCanvas &c, const Building &building,
@@ -263,17 +267,22 @@ void draw_mouse_coord_hud(const MapCanvas &c, const Building &building,
     return;
   auto [px, py] = c.screen_to_world(m);
   auto [rmf_x, rmf_y] = level_px_to_rmf(building, level_idx, px, py);
-  char buf[160];
+  char buf[192];
   std::snprintf(buf, sizeof(buf),
-                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)", px, py, rmf_x,
-                rmf_y);
+                "px (%.0f, %.0f)  |  rmf m (%.3f, %.3f)  |  zoom %.0f%%", px,
+                py, rmf_x, rmf_y, (double)c.view_state().scale * 100.0);
   ImVec2 sz = ImGui::CalcTextSize(buf);
-  ImVec2 pos(cp.x + 8.0f, cp.y + cs.y - sz.y - 8.0f);
+  ImVec2 pos(cp.x + kOverlayPadding + 8.0f,
+             cp.y + cs.y - sz.y - kOverlayPadding - 5.0f);
   ImDrawList *dl = c.draw_list();
-  dl->AddRectFilled(ImVec2(pos.x - 4, pos.y - 2),
-                    ImVec2(pos.x + sz.x + 4, pos.y + sz.y + 2),
-                    IM_COL32(0, 0, 0, 180), 3.0f);
-  dl->AddText(pos, IM_COL32(220, 220, 220, 255), buf);
+  ImVec2 r0(pos.x - 8, pos.y - 5), r1(pos.x + sz.x + 8, pos.y + sz.y + 5);
+  dl->AddRectFilled(
+      r0, r1,
+      ImGui::GetColorU32(theme::with_alpha(theme::palette::surface, 0.92f)),
+      kOverlayRounding);
+  dl->AddRect(r0, r1, ImGui::GetColorU32(theme::palette::border),
+              kOverlayRounding);
+  dl->AddText(pos, ImGui::GetColorU32(theme::palette::text), buf);
 }
 
 } // namespace imrmf::map_editor::canvas

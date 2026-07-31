@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use super::{MountInfo, SnapshotInfo, Storage};
+use super::{AssetEntry, MountInfo, SnapshotInfo, Storage};
 
 /// Filesystem-backed storage. Accepts two layouts:
 ///
@@ -201,6 +201,43 @@ impl Storage for LocalFsStorage {
         Ok(())
     }
 
+    async fn list_assets(&self, building_id: &str, subdir: &str) -> Result<Vec<AssetEntry>> {
+        let base = self.asset_root_for(building_id);
+        let dir = if subdir.is_empty() {
+            base
+        } else {
+            base.join(subdir)
+        };
+        let resolved = self.check_inside_root(&dir)?;
+        let mut out = Vec::new();
+        let mut rd = tokio::fs::read_dir(&resolved)
+            .await
+            .with_context(|| format!("readdir {}", resolved.display()))?;
+        while let Some(entry) = rd.next_entry().await? {
+            let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            if name.starts_with('.') || name.ends_with(".tmp") {
+                continue;
+            }
+            let is_dir = entry.file_type().await?.is_dir();
+            if is_dir && subdir.is_empty() && name == "snapshots" {
+                continue;
+            }
+            if !is_dir && name.ends_with(".building.yaml") {
+                continue;
+            }
+            let size = if is_dir {
+                0
+            } else {
+                entry.metadata().await.map(|m| m.len()).unwrap_or(0)
+            };
+            out.push(AssetEntry { name, is_dir, size });
+        }
+        out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        Ok(out)
+    }
+
     fn local_cache_path(&self, building_id: &str) -> PathBuf {
         self.write_path_for(building_id)
     }
@@ -267,12 +304,7 @@ impl Storage for LocalFsStorage {
         Ok(tokio::fs::read_to_string(&resolved).await?)
     }
 
-    async fn read_snapshot_asset(
-        &self,
-        building_id: &str,
-        dir: &str,
-        path: &str,
-    ) -> Result<Bytes> {
+    async fn read_snapshot_asset(&self, building_id: &str, dir: &str, path: &str) -> Result<Bytes> {
         let p = self
             .asset_root_for(building_id)
             .join("snapshots")
@@ -286,7 +318,12 @@ impl Storage for LocalFsStorage {
         Ok(vec!["main".to_string()])
     }
 
-    async fn deploy_snapshot(&self, _building_id: &str, _dir: &str, _dst_branch: &str) -> Result<()> {
+    async fn deploy_snapshot(
+        &self,
+        _building_id: &str,
+        _dir: &str,
+        _dst_branch: &str,
+    ) -> Result<()> {
         Err(anyhow::anyhow!(
             "deploy_snapshot is only supported on the S3 backend"
         ))

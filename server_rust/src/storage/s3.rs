@@ -10,7 +10,7 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use bytes::Bytes;
 
-use super::{MountInfo, SnapshotInfo, Storage};
+use super::{AssetEntry, MountInfo, SnapshotInfo, Storage};
 
 /// Maps live at `<prefix>/maps/<branch>/<id>/<id>.building.yaml`.
 pub struct S3Storage {
@@ -261,6 +261,52 @@ impl Storage for S3Storage {
             .await
             .with_context(|| format!("write asset cache {}", local.display()))?;
         Ok(())
+    }
+
+    async fn list_assets(&self, building_id: &str, subdir: &str) -> Result<Vec<AssetEntry>> {
+        let sub = trim_slashes(subdir);
+        let root = self.branch_root(&self.branch);
+        let prefix = if sub.is_empty() {
+            format!("{root}/{building_id}/")
+        } else {
+            format!("{root}/{building_id}/{sub}/")
+        };
+        let resp = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&prefix)
+            .delimiter("/")
+            .send()
+            .await
+            .context("s3 list_objects_v2 assets")?;
+        let mut out = Vec::new();
+        for cp in resp.common_prefixes() {
+            let Some(p) = cp.prefix() else { continue };
+            let name = p.strip_prefix(&prefix).unwrap_or(p).trim_end_matches('/');
+            if name.is_empty() || (sub.is_empty() && name == "snapshots") {
+                continue;
+            }
+            out.push(AssetEntry {
+                name: name.to_string(),
+                is_dir: true,
+                size: 0,
+            });
+        }
+        for obj in resp.contents() {
+            let Some(k) = obj.key() else { continue };
+            let name = k.strip_prefix(&prefix).unwrap_or(k);
+            if name.is_empty() || name.contains('/') || name.ends_with(".building.yaml") {
+                continue;
+            }
+            out.push(AssetEntry {
+                name: name.to_string(),
+                is_dir: false,
+                size: obj.size().unwrap_or(0).max(0) as u64,
+            });
+        }
+        out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        Ok(out)
     }
 
     async fn mirror_asset(&self, building_id: &str, path: &str) -> Result<()> {
