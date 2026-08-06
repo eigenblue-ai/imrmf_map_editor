@@ -21,6 +21,9 @@ build --incompatible_enable_cc_toolchain_resolution
 # pulled in as a local_path_override from a parent module (dnd/).
 common --experimental_isolated_extension_usages
 
+# venv interpreter symlinks do not survive tar/docker COPY (rules_python #2489).
+build --@rules_python//python/config_settings:venvs_use_declare_symlink=no
+
 build:wasm --define=wasm=true
 build:wasm --copt=-fexceptions
 build:wasm --linkopt=-fexceptions

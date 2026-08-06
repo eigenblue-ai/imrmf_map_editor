@@ -18,13 +18,23 @@ bazel_dep(name = "rules_shell", version = "0.3.0")
 bazel_dep(name = "com_github_mvukov_rules_ros2")
 archive_override(
     module_name = "com_github_mvukov_rules_ros2",
-    strip_prefix = "rules_ros2-4710585558693b62bdab089ca3d0f050b765c819",
-    urls = ["https://github.com/mvukov/rules_ros2/archive/4710585558693b62bdab089ca3d0f050b765c819.tar.gz"],
+    patches = ["//extensions:rules_ros2_srv_support.patch"],
+    # Jazzy pin, generates type descriptions so building_map_server advertises
+    # type hashes (else peers log "Failed to parse type hash ... (null)").
+    strip_prefix = "rules_ros2-56ad1dfa6a636378e623dd5903c4ff4d7d2acd4b",
+    urls = ["https://github.com/mvukov/rules_ros2/archive/56ad1dfa6a636378e623dd5903c4ff4d7d2acd4b.tar.gz"],
+)
+
+# boost 1.89 (via websocketpp) uses repo_name=None, rejected by bazel, so pin 1.88
+single_version_override(
+    module_name = "boost.asio",
+    version = "1.88.0.bcr.2",
 )
 
 rules_ros2_non_module_deps = use_extension("@com_github_mvukov_rules_ros2//ros2:extensions.bzl", "non_module_deps")
 use_repo(
     rules_ros2_non_module_deps,
+    "ros2_rcl_interfaces",
     "ros2_rclpy",
     "ros2_rosidl",
     "ros2cli",
@@ -36,13 +46,13 @@ rust.toolchain(versions = ["1.88.0"])
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
     is_default = True,
-    python_version = "3.10",
+    python_version = "3.12",
 )
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
     hub_name = "imrmf_pip",
-    python_version = "3.10",
+    python_version = "3.12",
     requirements_lock = "//third_party:requirements.txt",
 )
 use_repo(pip, "imrmf_pip")
@@ -201,6 +211,7 @@ crate.spec(
     package = "time",
     version = "=0.3.47",
 )
+
 # aws-runtime fails type inference against aws-smithy-types 1.5.0 (E0282); pin
 # the last known-good 1.4.x from the committed lock.
 crate.spec(

@@ -1,3 +1,6 @@
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["imgui_docking.BUILD.bazel"])
+exports_files([
+    "imgui_docking.BUILD.bazel",
+    "rules_ros2_srv_support.patch",
+])

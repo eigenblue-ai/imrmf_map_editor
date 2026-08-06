@@ -1,0 +1,18 @@
+--- ros2/ament.bzl.orig
++++ ros2/ament.bzl
+@@ -181,6 +181,15 @@
+             target_file = plugin.dynamic_library,
+         )
+         outputs.append(dynamic_library)
++        # Also emit the introspection typesupport symlink (needed by ros2 CLI / services).
++        introspection_library = ctx.actions.declare_file(
++            paths.join(prefix_path, "lib", "lib" + package_name + "__rosidl_typesupport_introspection_cpp.so"),
++        )
++        ctx.actions.symlink(
++            output = introspection_library,
++            target_file = plugin.dynamic_library,
++        )
++        outputs.append(introspection_library)
+ 
+     idls_from_deps = depset(
+         transitive = [
