@@ -1,11 +1,32 @@
 #pragma once
 #include "egb_imgui/theme.hpp"
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h" // BeginOverlayCard cursor/content restore
 #include <algorithm>
+#include <cstdarg>
 #include <string>
 #include <vector>
 
 namespace ImGuiWidgets {
+
+// Tooltip on the previous item.
+inline void ItemTooltip(const char *fmt, ...) {
+  if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+    return;
+  va_list args;
+  va_start(args, fmt);
+  ImGui::SetTooltipV(fmt, args);
+  va_end(args);
+}
+
+// Right-align the next item of the given width in the current row.
+inline void SameLineRight(float item_width) {
+  ImGui::SameLine();
+  const float x =
+      ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - item_width;
+  if (x > ImGui::GetCursorPosX())
+    ImGui::SetCursorPosX(x);
+}
 
 // 2-column label/control form table that scales with the panel. Pair rows with
 // FormRow + FormControlWidth, then ImGui::EndTable().
@@ -55,6 +76,58 @@ inline void IconText(const char *icon, const char *text,
   ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(text);
+}
+
+// Icon + text with the icon tinted by semantic state (a status pill). Pass
+// tint_text to color the label too.
+inline void StatusText(const char *icon, const char *text, theme::Signal s,
+                       bool tint_text = false) {
+  const ImVec4 col = theme::signal_color(s);
+  if (tint_text)
+    ImGui::PushStyleColor(ImGuiCol_Text, col);
+  IconText(icon, text, &col);
+  if (tint_text)
+    ImGui::PopStyleColor();
+}
+
+// Wrapped status line for async ops, colored by state.
+inline void StatusLine(theme::Signal s, const char *text) {
+  ImGui::PushStyleColor(ImGuiCol_Text, theme::signal_color(s));
+  ImGui::TextWrapped("%s", text);
+  ImGui::PopStyleColor();
+}
+
+// Destructive-action button: the standard hover ramp, in danger red.
+inline bool DangerButton(const char *label, const ImVec2 &size = ImVec2(0, 0)) {
+  ImGui::PushStyleColor(ImGuiCol_Button,
+                        theme::with_alpha(theme::palette::danger, 0.75f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                        theme::with_alpha(theme::palette::danger, 0.90f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::palette::danger);
+  const bool pressed = ImGui::Button(label, size);
+  ImGui::PopStyleColor(3);
+  return pressed;
+}
+
+// Icon button that reads as pressed-in while active. Returns true on click.
+// Does not SameLine itself.
+inline bool ToolbarToggle(const char *icon, const char *tooltip, bool active) {
+  if (active)
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
+  const bool clicked = ImGui::Button(icon);
+  if (active)
+    ImGui::PopStyleColor();
+  if (tooltip)
+    ItemTooltip("%s", tooltip);
+  return clicked;
+}
+
+// Muted vertical divider between toolbar groups. Leaves the cursor on the
+// same line.
+inline void ToolbarSeparator() {
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
 }
 
 // Form row: ellipsized label in the left column, cursor left in the right.
@@ -139,8 +212,8 @@ inline int ModalActions(const char *primary, const char *secondary = nullptr,
   return result;
 }
 
-// Segmented control: one bar, shared dividers, outer corners rounded.
-// Horizontal if it fits, else stacked. Returns the clicked index, or -1.
+// Segmented control: one bar, shared dividers, outer corners rounded. Horizontal
+// if it fits, else stacked. Returns the clicked index, or -1.
 inline int ButtonGroupSelector(const std::vector<std::string> &options,
                                int current_selection,
                                const ImVec2 &button_size = ImVec2(0, 0)) {
@@ -250,6 +323,91 @@ inline bool ButtonGroupSelector(const std::string &option1,
   }
 
   return false;
+}
+
+namespace detail {
+struct OverlaySaved {
+  ImVec2 cursor, cursor_max, ideal_max;
+};
+// ImGui is single-threaded per context, so a plain stack is fine here.
+inline std::vector<OverlaySaved> &overlay_saved_stack() {
+  static std::vector<OverlaySaved> s;
+  return s;
+}
+} // namespace detail
+
+// Floating card over a canvas, anchored top-left at `screen_pos` (use
+// theme::metrics::overlay_edge as the gap from the canvas edge).
+// EndOverlayCard restores the cursor and content extents, so the card does
+// not disturb the canvas flow or grow the parent window.
+inline void BeginOverlayCard(const char *id, ImVec2 screen_pos,
+                             ImVec2 size = ImVec2(0, 0),
+                             ImGuiChildFlags extra_flags =
+                                 ImGuiChildFlags_AutoResizeX |
+                                 ImGuiChildFlags_AutoResizeY) {
+  ImGuiWindow *win = ImGui::GetCurrentWindow();
+  detail::overlay_saved_stack().push_back(
+      {win->DC.CursorPos, win->DC.CursorMaxPos, win->DC.IdealMaxPos});
+  win->DC.CursorPos = screen_pos;
+  ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                        theme::with_alpha(theme::palette::surface, 0.92f));
+  ImGui::PushStyleColor(ImGuiCol_Border, theme::palette::border);
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, theme::metrics::rounding);
+  ImGui::PushStyleVar(
+      ImGuiStyleVar_WindowPadding,
+      ImVec2(theme::metrics::overlay_pad_x, theme::metrics::overlay_pad_y));
+  ImGui::BeginChild(id, size, extra_flags | ImGuiChildFlags_Border,
+                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                        ImGuiWindowFlags_NoScrollbar |
+                        ImGuiWindowFlags_NoScrollWithMouse);
+}
+
+inline void EndOverlayCard() {
+  ImGui::EndChild();
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor(2);
+  ImGuiWindow *win = ImGui::GetCurrentWindow();
+  const detail::OverlaySaved &saved = detail::overlay_saved_stack().back();
+  win->DC.CursorPos = saved.cursor;
+  win->DC.CursorMaxPos = saved.cursor_max;
+  win->DC.IdealMaxPos = saved.ideal_max;
+  detail::overlay_saved_stack().pop_back();
+}
+
+// Auto-refresh state for a data panel. tick() advances by io.DeltaTime and
+// fires when the interval elapses.
+struct RefreshTimer {
+  float interval = 5.0f;
+  float elapsed = 0.0f;
+  bool auto_refresh = true;
+
+  bool tick() {
+    if (!auto_refresh)
+      return false;
+    elapsed += ImGui::GetIO().DeltaTime;
+    if (elapsed < interval)
+      return false;
+    elapsed = 0.0f;
+    return true;
+  }
+};
+
+// Refresh button + auto-refresh checkbox + countdown. Returns true when the
+// caller should reload (button pressed or interval elapsed).
+inline bool RefreshControls(RefreshTimer &timer,
+                            const char *label = "Refresh") {
+  bool fire = timer.tick();
+  if (ImGui::Button(label)) {
+    fire = true;
+    timer.elapsed = 0.0f;
+  }
+  ImGui::SameLine();
+  ImGui::Checkbox("Auto-refresh", &timer.auto_refresh);
+  if (timer.auto_refresh) {
+    ImGui::SameLine();
+    ImGui::Text("(%.1fs)", timer.interval - timer.elapsed);
+  }
+  return fire;
 }
 
 } // namespace ImGuiWidgets

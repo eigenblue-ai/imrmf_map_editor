@@ -252,11 +252,11 @@ MapCanvas::MapCanvas(std::string asset_id, TextureProvider *provider)
     : asset_id_(std::move(asset_id)), provider_(provider) {}
 
 ImVec2 MapCanvas::world_to_screen(double wx, double wy) const {
-  return view_world_to_screen(view_state_, canvas_center_, wx, wy);
+  return egb::view_world_to_screen(view_state_, canvas_center_, wx, wy);
 }
 
 std::pair<double, double> MapCanvas::screen_to_world(ImVec2 sp) const {
-  return view_screen_to_world(view_state_, canvas_center_, sp);
+  return egb::view_screen_to_world(view_state_, canvas_center_, sp);
 }
 
 void MapCanvas::draw(const Building &building, int level_idx,
@@ -604,8 +604,7 @@ void MapCanvas::draw(const Building &building, int level_idx,
 }
 
 void MapCanvas::handle_pan_zoom(bool hovered) {
-  ::imrmf::map_editor::canvas::handle_pan_zoom(view_state_, canvas_center_,
-                                               hovered);
+  egb::handle_pan_zoom(view_state_, canvas_center_, hovered);
 }
 
 } // namespace imrmf::map_editor::canvas

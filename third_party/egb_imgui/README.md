@@ -1,29 +1,47 @@
 # egb_imgui — shared ImGui UI kit
 
-Eigenblue's shared ImGui theme, widgets, and form layout helpers for internal
-GUI tools. It is the one place the brand look and the common UI building blocks
-live, so every tool (the simulation runner, the storage explorer, the map
-editor) reads as one product instead of each reinventing its own colors and
-controls.
+Eigenblue's shared ImGui theme, widgets, and layout helpers for internal GUI
+tools. It is the one place the brand look and the common UI building blocks
+live, so every internal tool reads as one product instead of each reinventing
+its own colors and controls.
+
+If you are building an internal GUI tool, depend on this instead of styling
+ImGui yourself: apply the theme, load the bundled font, and use the widgets
+below for the recurring patterns (forms, modals, toolbars, status display,
+canvas overlays, docked layouts).
 
 Small on purpose. This is a thin layer on top of [Dear ImGui](https://github.com/ocornut/imgui),
 not a framework.
 
 ## What's in it
 
-| Target         | Header                      | What it gives you                                                                                                                                                                                                      |
-| -------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `:theme`       | `egb_imgui/theme.hpp`       | The brand palette and `theme::apply()`, which paints an `ImGuiStyle` in the corporate colors. Call it once after `ImGui::CreateContext()`.                                                                             |
-| `:widgets`     | `egb_imgui/widgets.hpp`     | The 2-column form layout (`BeginFormTable` / `FormRow` / `FormControlWidth`) that keeps labels and controls aligned and stops controls overflowing on a narrow panel, plus `ButtonGroupSelector`, a segmented control. |
-| `:font`        | `egb_imgui/font.hpp`        | `theme::load_default_font()`, loads the bundled Inter font with a fallback to ImGui's built-in font. Add `:fonts` to your binary's `data`.                                                                             |
-| `:core`        | —                           | The three above in one dep. ImGui only, no other third-party libraries.                                                                                                                                                |
-| `:schema_ui`   | `egb_imgui/schema_ui.hpp`   | `render_schema_ui()`, builds a form straight from a JSON Schema using `x-ui-*` annotations. Opt-in because it pulls in nlohmann_json.                                                                                  |
-| `:image_utils` | `egb_imgui/image_utils.hpp` | `remove_white_background()`, an edge flood-fill for logo and icon textures.                                                                                                                                            |
-| `:stb_image`   | `egb_imgui/stb_image.h`     | Vendored stb_image / stb_image_write for loading textures.                                                                                                                                                             |
+| Target         | Header                      | What it gives you                                                                                                                                                                                                                       |
+| -------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `:theme`       | `egb_imgui/theme.hpp`       | The brand palette and `theme::apply()`, which paints an `ImGuiStyle` in the corporate colors. Call it once after `ImGui::CreateContext()`.                                                                                              |
+| `:widgets`     | `egb_imgui/widgets.hpp`     | The 2-column form layout (`BeginFormTable` / `FormRow` / `FormControlWidth`) that keeps labels and controls aligned, `ButtonGroupSelector` (a segmented control), `BeginModal` / `ModalActions` for consistent brand-styled modals, `BeginOverlayCard` / `EndOverlayCard` for floating cards over a canvas, status helpers (`StatusText`, `StatusLine`), toolbar helpers (`ToolbarToggle`, `ToolbarSeparator`, `SameLineRight`), `DangerButton`, `ItemTooltip`, and `RefreshTimer` / `RefreshControls` for auto-refreshing data panels. |
+| `:font`        | `egb_imgui/font.hpp`        | `theme::load_default_font()`, loads the bundled Inter font with a fallback to ImGui's built-in font. Add `:fonts` to your binary's `data`.                                                                                              |
+| `:core`        | —                           | The three above in one dep. ImGui only, no other third-party libraries.                                                                                                                                                                 |
+| `:icons`       | `egb_imgui/icons.hpp`       | Material Design Icons (Apache-2.0) merged into the atlas. `ICON_MDI_*` macros + `theme::load_icons()`. Needs ImGui built with `IMGUI_USE_WCHAR32` (MDI codepoints are above U+FFFF). Add `:font_mdi` to your binary's `data`.           |
+| `:schema_ui`   | `egb_imgui/schema_ui.hpp`   | `render_schema_ui()`, builds a form straight from a JSON Schema using `x-ui-*` annotations. Opt-in because it pulls in nlohmann_json.                                                                                                   |
+| `:image_utils` | `egb_imgui/image_utils.hpp` | `remove_white_background()`, an edge flood-fill for logo and icon textures.                                                                                                                                                             |
+| `:stb_image`   | `egb_imgui/stb_image.h`     | Vendored stb_image / stb_image_write for loading textures.                                                                                                                                                                              |
+| `:dockspace`   | `egb_imgui/dockspace.hpp`   | `BeginDockSpaceHost()` / `EndDockSpaceHost()`, the fullscreen host window + `DockSpace` boilerplate at the top of every docked tool's frame.                                                                                            |
+| `:window_manager` | `egb_imgui/window_manager.hpp` | `egb::WindowManager` + `egb::WindowInterface`: registry of tool windows with `draw_all()`, a Window visibility menu, and `name=0\|1` visibility persistence.                                                                       |
+| `:viewport`    | `egb_imgui/viewport.hpp`    | `egb::ViewState` + `view_world_to_screen` / `view_screen_to_world` / `handle_pan_zoom`: cursor-centered wheel zoom and middle-drag pan for a 2D world-space canvas.                                                                     |
+| `:format`      | `egb_imgui/format.hpp`      | `egb::human_size`, `format_duration`, `format_time`, `format_timestamp_ms`, `short_id`. Value-to-string formatters, no ImGui dependency.                                                                                                |
 
-Namespaces today are `theme::`, `ImGuiWidgets::`, and the free function
-`render_schema_ui`. Unifying them under one namespace is a pre-1.0 decision, not
-done yet so the kit stays a drop-in match for the code it came from.
+Namespaces today are `theme::`, `ImGuiWidgets::`, `egb::` (the non-widget
+helpers), and the free function `render_schema_ui`. Unifying them under one
+namespace is a pre-1.0 decision, not done yet so the kit stays a drop-in match
+for the code it came from.
+
+`theme::` also carries the semantic status layer: `theme::Signal`
+(success/warning/danger/info/muted), `signal_color()`, and `signal_for(value,
+warn_at, ok_at)` for threshold-colored metrics — use these instead of mapping
+states to colors by hand.
+
+`bazel test //...` runs a headless smoke test that pushes every widget through
+a real ImGui frame.
 
 ## Corporate identity colors
 
@@ -70,8 +88,11 @@ Two rules that keep the look consistent:
 ## Using it
 
 egb_imgui expects the consumer to provide Dear ImGui as `@imgui_docking//:imgui`
-(docking branch, commit `92e2df5`). Every eigenblue tool already pins that exact
-commit, so vendored source compiles as-is.
+(docking branch, commit `92e2df5` — the commit this repo's own module extension
+pins). Pin the same commit in your project so vendored source compiles as-is.
+`extensions/imgui_docking.BUILD.bazel` is the canonical build file for it; copy
+it rather than writing your own, and keep `IMGUI_USE_WCHAR32` defined so the
+icon font works.
 
 ```starlark
 # BUILD.bazel
@@ -95,9 +116,9 @@ theme::apply();                       // brand colors
 theme::load_default_font();           // Inter, with fallback
 
 if (ImGuiWidgets::BeginFormTable("##settings")) {
-  ImGuiWidgets::FormRow("Takt time");
+  ImGuiWidgets::FormRow("Update interval");
   ImGui::SetNextItemWidth(ImGuiWidgets::FormControlWidth());
-  ImGui::SliderFloat("##takt", &takt, 1.0f, 60.0f, "%.1f s");
+  ImGui::SliderFloat("##interval", &interval, 1.0f, 60.0f, "%.1f s");
   ImGui::EndTable();
 }
 ```

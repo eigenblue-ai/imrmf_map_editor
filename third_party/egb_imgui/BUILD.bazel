@@ -44,6 +44,37 @@ cc_library(
     ],
 )
 
+# Fullscreen dockspace host boilerplate for docked tools.
+cc_library(
+    name = "dockspace",
+    hdrs = ["egb_imgui/dockspace.hpp"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+# Tool-window registry with a visibility menu and name=0|1 persistence.
+cc_library(
+    name = "window_manager",
+    hdrs = ["egb_imgui/window_manager.hpp"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+# Pan/zoom transform for a 2D world-space canvas. ImGui only.
+cc_library(
+    name = "viewport",
+    hdrs = ["egb_imgui/viewport.hpp"],
+    strip_include_prefix = ".",
+    deps = ["@imgui_docking//:imgui"],
+)
+
+# Byte-size / duration / timestamp / id formatters. No ImGui.
+cc_library(
+    name = "format",
+    hdrs = ["egb_imgui/format.hpp"],
+    strip_include_prefix = ".",
+)
+
 # Opt-in: schema-driven form UI. Pulls in nlohmann_json, so it is kept out of
 # the core for consumers that do not want the JSON dependency.
 cc_library(

@@ -25,6 +25,12 @@ inline ImVec4 over(const ImVec4 &fg, const ImVec4 &bg) {
                 fg.z * a + bg.z * (1.0f - a), 1.0f);
 }
 
+// Linear blend between two colors. t = 0 gives a, t = 1 gives b.
+inline ImVec4 mix(const ImVec4 &a, const ImVec4 &b, float t) {
+  return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
+                a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+}
+
 // Brand palette.
 namespace palette {
 inline const ImVec4 blue = rgb(0x5581B0);    // secondary interactive
@@ -42,6 +48,33 @@ inline const ImVec4 warning = rgb(0xFFB020); // pending / caution - vivid amber
 inline const ImVec4 danger = rgb(0xFF453A);  // error / stop - vivid red
 inline const ImVec4 info = rgb(0x40B5FF);    // queued / highlight - vivid azure
 } // namespace palette
+
+// Semantic status states so tools stop hand-picking their own ok/warn/error
+// colors.
+enum class Signal { success, warning, danger, info, muted };
+
+inline const ImVec4 &signal_color(Signal s) {
+  switch (s) {
+  case Signal::success:
+    return palette::success;
+  case Signal::warning:
+    return palette::warning;
+  case Signal::danger:
+    return palette::danger;
+  case Signal::info:
+    return palette::info;
+  default:
+    return palette::muted;
+  }
+}
+
+// Threshold mapping for higher-is-better metrics: success at/above ok_at,
+// warning at/above warn_at, danger below.
+inline Signal signal_for(float value, float warn_at, float ok_at) {
+  return value >= ok_at   ? Signal::success
+         : value >= warn_at ? Signal::warning
+                            : Signal::danger;
+}
 
 // One source for spacing, rounding, borders. Use instead of literals.
 namespace metrics {

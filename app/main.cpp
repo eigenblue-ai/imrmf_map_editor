@@ -1507,7 +1507,8 @@ void frame() {
   int w, h;
   glfwGetFramebufferSize(g_window, &w, &h);
   glViewport(0, 0, w, h);
-  glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
+  glClearColor(theme::palette::bg.x, theme::palette::bg.y,
+               theme::palette::bg.z, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 

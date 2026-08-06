@@ -5,6 +5,7 @@
 
 #include "egb_imgui/icons.hpp"
 #include "egb_imgui/theme.hpp"
+#include "egb_imgui/widgets.hpp"
 #include "imgui/imgui.h"
 
 #include <algorithm>
@@ -16,29 +17,6 @@ namespace {
 
 constexpr float kOverlayPadding = theme::metrics::overlay_edge;
 constexpr float kOverlayRounding = theme::metrics::rounding;
-inline ImVec2 overlay_inner_pad() {
-  return ImVec2(theme::metrics::overlay_pad_x, theme::metrics::overlay_pad_y);
-}
-constexpr ImGuiWindowFlags kOverlayWinFlags =
-    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
-    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-
-// Themed overlay card, pair with end_overlay_card().
-void begin_overlay_card(const char *id, ImVec2 size,
-                        ImGuiChildFlags extra_flags) {
-  ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                        theme::with_alpha(theme::palette::surface, 0.92f));
-  ImGui::PushStyleColor(ImGuiCol_Border, theme::palette::border);
-  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kOverlayRounding);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, overlay_inner_pad());
-  ImGui::BeginChild(id, size, extra_flags | ImGuiChildFlags_Border,
-                    kOverlayWinFlags);
-}
-void end_overlay_card() {
-  ImGui::EndChild();
-  ImGui::PopStyleVar(2);
-  ImGui::PopStyleColor(2);
-}
 
 } // namespace
 
@@ -49,11 +27,9 @@ bool draw_level_selector_overlay(const Building &building, int &level_idx,
   level_idx = std::clamp(level_idx, 0, (int)building.levels.size() - 1);
 
   ImVec2 cp = canvas.canvas_pos();
-  ImVec2 saved = ImGui::GetCursorScreenPos();
-  ImGui::SetCursorScreenPos(
+  ImGuiWidgets::BeginOverlayCard(
+      "##canvas_level_overlay",
       ImVec2(cp.x + kOverlayPadding, cp.y + kOverlayPadding));
-  begin_overlay_card("##canvas_level_overlay", ImVec2(0, 0),
-                     ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
 
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("Floor");
@@ -77,8 +53,7 @@ bool draw_level_selector_overlay(const Building &building, int &level_idx,
     ImGui::EndCombo();
   }
 
-  end_overlay_card();
-  ImGui::SetCursorScreenPos(saved);
+  ImGuiWidgets::EndOverlayCard();
   return changed;
 }
 
@@ -121,10 +96,10 @@ void draw_layers_overlay(
 
   if (state.expanded) {
     const float pane_w = 280.0f;
-    ImGui::SetCursorScreenPos(
-        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding));
-    begin_overlay_card("##canvas_layers_overlay", ImVec2(pane_w, 0),
-                       ImGuiChildFlags_AutoResizeY);
+    ImGuiWidgets::BeginOverlayCard(
+        "##canvas_layers_overlay",
+        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding),
+        ImVec2(pane_w, 0), ImGuiChildFlags_AutoResizeY);
 
     {
       FloorplanSession &fps = fp_sessions[level.name];
@@ -200,15 +175,15 @@ void draw_layers_overlay(
       }
     }
 
-    end_overlay_card();
+    ImGuiWidgets::EndOverlayCard();
   }
 
   if (has_view && state.view_expanded) {
     const float pane_w = 200.0f;
-    ImGui::SetCursorScreenPos(
-        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding));
-    begin_overlay_card("##canvas_view_overlay", ImVec2(pane_w, 0),
-                       ImGuiChildFlags_AutoResizeY);
+    ImGuiWidgets::BeginOverlayCard(
+        "##canvas_view_overlay",
+        ImVec2(tb.x - pane_w - kOverlayPadding, cp.y + kOverlayPadding),
+        ImVec2(pane_w, 0), ImGuiChildFlags_AutoResizeY);
     if (view.show_fiducials)
       ImGui::Checkbox("Fiducials", view.show_fiducials);
     if (view.show_floors)
@@ -219,7 +194,7 @@ void draw_layers_overlay(
       ImGui::Checkbox("Doors", view.show_doors);
     if (view.show_measurements)
       ImGui::Checkbox("Measurements", view.show_measurements);
-    end_overlay_card();
+    ImGuiWidgets::EndOverlayCard();
   }
 
   ImGui::SetCursorScreenPos(saved);

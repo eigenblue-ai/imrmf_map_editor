@@ -1476,27 +1476,16 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 
   auto mode_button = [&](const char *icon, const char *tip, Mode m,
                          bool same_line = true) {
-    bool active = (state.mode == m);
-    if (active)
-      ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
-    if (ImGui::Button(icon)) {
+    if (ImGuiWidgets::ToolbarToggle(icon, tip, state.mode == m)) {
       state.mode = m;
       state.pending_lane_start = -1;
       state.pending_edge_start = -1;
       state.pending_polygon.clear();
     }
-    if (active)
-      ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("%s", tip);
     if (same_line)
       ImGui::SameLine();
   };
-  auto tool_sep = []() {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-  };
+  auto tool_sep = []() { ImGuiWidgets::ToolbarSeparator(); };
   mode_button(ICON_MDI_CURSOR_DEFAULT, "Select [S]", Mode::Pan);
 
   {
@@ -1505,13 +1494,13 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     if (nv > 0 || nl > 0) {
       ImGui::AlignTextToFramePadding();
       if (nv > 0 && nl > 0)
-        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f),
+        ImGui::TextColored(theme::palette::info,
                            "%d vertex / %d lane%s", nv, nl, nl == 1 ? "" : "s");
       else if (nv > 0)
-        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d vertex%s", nv,
+        ImGui::TextColored(theme::palette::info, "%d vertex%s", nv,
                            nv == 1 ? "" : "es");
       else
-        ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "%d lane%s", nl,
+        ImGui::TextColored(theme::palette::info, "%d lane%s", nl,
                            nl == 1 ? "" : "s");
       ImGui::SameLine();
 
@@ -1636,10 +1625,8 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   tool_sep();
 
   {
-    const bool active = state.align_floors_mode;
-    if (active)
-      ImGui::PushStyleColor(ImGuiCol_Button, theme::palette::blue);
-    if (ImGui::Button(ICON_MDI_LAYERS_EDIT)) {
+    if (ImGuiWidgets::ToolbarToggle(ICON_MDI_LAYERS_EDIT, "Align floors",
+                                    state.align_floors_mode)) {
       state.align_floors_mode = !state.align_floors_mode;
       if (state.align_floors_mode) {
         state.selected_vertices.clear();
@@ -1676,10 +1663,6 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
                 : 0.0;
       }
     }
-    if (active)
-      ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Align floors");
     ImGui::SameLine();
   }
 
@@ -3780,11 +3763,11 @@ void EditorView::draw_status_bar(const EditorState &state) {
   const char *yjs = map_editor_yjs_status();
   if (yjs && yjs[0]) {
     bool ok = std::strcmp(yjs, "connected") == 0 && map_editor_yjs_synced();
-    ImU32 ycol = ok ? IM_COL32(100, 220, 120, 255)
-                    : (std::strcmp(yjs, "connecting") == 0
-                           ? IM_COL32(220, 200, 100, 255)
-                           : IM_COL32(255, 120, 120, 255));
-    ImGui::PushStyleColor(ImGuiCol_Text, ycol);
+    const theme::Signal sig = ok ? theme::Signal::success
+                             : std::strcmp(yjs, "connecting") == 0
+                                 ? theme::Signal::warning
+                                 : theme::Signal::danger;
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::signal_color(sig));
     ImGui::Text("collab: %s%s", yjs, ok ? " (synced)" : "");
     ImGui::PopStyleColor();
     std::free((void *)yjs);
@@ -4306,14 +4289,10 @@ void EditorView::draw_version_strip(EditorState &state) {
   // Pull up over the child spacing so no bg sliver shows above the bar.
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() -
                        ImGui::GetStyle().ItemSpacing.y);
-  auto mix = [](const ImVec4 &a, const ImVec4 &b, float t) {
-    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-                  a.z + (b.z - a.z) * t, 1.0f);
-  };
-  ImGui::PushStyleColor(
-      ImGuiCol_ChildBg,
-      on_snapshot ? mix(theme::palette::surface, theme::palette::warning, 0.30f)
-                  : theme::palette::surface);
+  ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                        on_snapshot ? theme::mix(theme::palette::surface,
+                                                 theme::palette::warning, 0.30f)
+                                    : theme::palette::surface);
   ImGui::BeginChild("##version_strip", ImVec2(0, 0), false,
                     ImGuiWindowFlags_NoScrollbar);
   {
