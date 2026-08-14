@@ -3,10 +3,10 @@
 
 #include "canvas/overlays.hpp"
 
-#include "egb_imgui/icons.hpp"
-#include "egb_imgui/theme.hpp"
-#include "egb_imgui/widgets.hpp"
 #include "imgui/imgui.h"
+#include "ui/icons.hpp"
+#include "ui/theme.hpp"
+#include "ui/widgets.hpp"
 
 #include <algorithm>
 #include <cstdio>

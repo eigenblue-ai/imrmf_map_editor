@@ -7,8 +7,17 @@ edition = "2021"
 name = "imrmf_map_editor"
 path = "src/main.rs"
 
+# Matches the bazel target name, which is what the sources import.
+[lib]
+name = "imrmf_core"
+path = "src/lib.rs"
+
 [dependencies]
 yrs = "0.21"
+serde_json = "1"
+tempfile = "3"
+# storage/s3.rs needs aws-*, left out on purpose: they declare a rust-version
+# above the 1.88 pin, and cargo enforces it where rules_rust does not.
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
@@ -17,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 futures = "0.3"
 futures-util = "0.3"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"

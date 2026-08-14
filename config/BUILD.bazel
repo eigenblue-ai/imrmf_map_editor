@@ -4,3 +4,10 @@ config_setting(
     name = "wasm",
     define_values = {"wasm": "true"},
 )
+
+# On by default: the container needs it and loses it silently. macOS opts out
+# in .bazelrc, rules_ros2 has no darwin support.
+config_setting(
+    name = "no_ros2",
+    define_values = {"ros2": "false"},
+)

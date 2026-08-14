@@ -16,6 +16,17 @@ build --verbose_failures
 
 build --incompatible_enable_cc_toolchain_resolution
 
+# Picks up the build:macos block below by host platform.
+build --enable_platform_specific_config
+
+# glfw's cocoa backend is objc, which the autodetected darwin toolchain cannot
+# compile.
+build:macos --extra_toolchains=@local_config_apple_cc_toolchains//:all
+# std::filesystem is marked unavailable below 10.15.
+build:macos --macos_minimum_os=11.0
+# rules_ros2 is Linux-only, so the /map publisher is out of the macOS build.
+build:macos --define=ros2=false
+
 # Needed for `crate = use_extension(..., isolate=True)` in MODULE.bazel —
 # avoids the "two crate universes with same name" conflict when imrmf is
 # pulled in as a local_path_override from a parent module (dnd/).

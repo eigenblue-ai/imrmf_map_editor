@@ -14,7 +14,7 @@ cc_library(
         "imstb_textedit.h",
         "imstb_truetype.h",
     ],
-    # imgui_internal.h is a public header here: egb_imgui's overlay card needs
+    # imgui_internal.h is a public header here: ui's overlay card needs
     # window->DC to restore the parent's content extents.
     hdrs = [
         "imconfig.h",
@@ -79,8 +79,9 @@ cc_library(
     include_prefix = "imgui",
     includes = ["backends"],
     linkopts = select({
-        "@imrmf_map_editor//config:wasm": [],
-        "//conditions:default": ["-lGL"],
+        "@platforms//os:macos": ["-framework OpenGL"],
+        "@platforms//os:linux": ["-lGL"],
+        "//conditions:default": [],  # emscripten links GL itself
     }),
     deps = [":imgui"],
 )

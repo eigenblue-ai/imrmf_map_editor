@@ -12,9 +12,9 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use yrs::{Doc, ReadTxn, Transact};
 
 use crate::storage::{MountConfig, MountInfo, SnapshotInfo, Storage};
-use crate::sync;
 use crate::validate::Validator;
-use crate::yaml_bridge;
+use imrmf_core::sync;
+use imrmf_core::yaml_bridge;
 
 pub struct AppState {
     pub doc: Doc,

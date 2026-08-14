@@ -3,11 +3,11 @@
 
 #include "canvas/http_texture_provider.hpp"
 
+#include "canvas/gl.hpp"
+
 #ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
 #include <emscripten.h>
 #else
-#include <GL/gl.h>
 #include <curl/curl.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "canvas/stb_image.h"
@@ -213,8 +213,8 @@ self.onmessage = async (e) => {
       });
 
 // Fast path: decode and upload straight into a GL texture, skipping the CPU
-// readback + per-pixel loops that block the main thread. Used for the floorplan,
-// which is never recolored.
+// readback + per-pixel loops that block the main thread. Used for the
+// floorplan, which is never recolored.
 EM_JS(void, imrmf_canvas_fetch_fast,
       (const char *url_c, int max_dim, int handle, int gl_id, int gl_id_inv), {
         const url = UTF8ToString(url_c);
@@ -281,7 +281,8 @@ std::unordered_map<int, LayerTexture *> g_fast_pending;
 // the dimensions, keep the grayscale source for later recolor, and flip status.
 extern "C" EMSCRIPTEN_KEEPALIVE void
 imrmf_canvas_on_worker_decoded(int handle, int w, int h, int orig_w, int orig_h,
-                               int is_color, unsigned char *gray, int gray_len) {
+                               int is_color, unsigned char *gray,
+                               int gray_len) {
   auto it = g_worker_pending.find(handle);
   if (it == g_worker_pending.end()) {
     if (gray)

@@ -1,7 +1,7 @@
 #pragma once
-#include "egb_imgui/theme.hpp"
 #include "imgui/imgui.h"
 #include "imgui/imgui_internal.h" // BeginOverlayCard cursor/content restore
+#include "ui/theme.hpp"
 #include <algorithm>
 #include <cstdarg>
 #include <string>
@@ -151,29 +151,90 @@ inline void SectionGap() {
   ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
 }
 
+// Centered title for a window whose system title bar is transparent. The
+// system's close/minimise/zoom buttons draw over the left of it, so it has to
+// stay tall enough to hold them. Returns true while held, for the caller to
+// drag its own window.
+inline bool WindowTitleBar(const char *title) {
+  // Window space, not content space. The content origin is inset by
+  // WindowPadding, so a bar drawn from there stops short of the edges.
+  const ImVec2 window_pos = ImGui::GetWindowPos();
+  const float window_width = ImGui::GetWindowSize().x;
+  const ImVec2 padding = ImGui::GetStyle().WindowPadding;
+  const float height = ImMax(28.0f, ImGui::GetFrameHeight() + 8.0f);
+
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  const ImVec2 bottom_right(window_pos.x + window_width, window_pos.y + height);
+  dl->AddRectFilled(window_pos, bottom_right,
+                    ImGui::GetColorU32(theme::palette::surface));
+  dl->AddLine(ImVec2(window_pos.x, bottom_right.y), bottom_right,
+              ImGui::GetColorU32(theme::palette::border));
+
+  const ImVec2 text_size = ImGui::CalcTextSize(title);
+  dl->AddText(ImVec2(window_pos.x + (window_width - text_size.x) * 0.5f,
+                     window_pos.y + (height - text_size.y) * 0.5f),
+              ImGui::GetColorU32(theme::palette::text), title);
+
+  // Hit target for dragging. The system buttons live above this view, so they
+  // take their own clicks first.
+  ImGui::SetCursorScreenPos(window_pos);
+  ImGui::InvisibleButton("##titlebar_drag", ImVec2(window_width, height));
+  const bool held = ImGui::IsItemActive();
+
+  // Resume the body below the bar, with the window's normal padding.
+  ImGui::SetCursorScreenPos(
+      ImVec2(window_pos.x + padding.x, window_pos.y + height + padding.y));
+  return held;
+}
+
 // Centered, brand-styled modal. OpenPopup(id) to show, wrap the body in
 // BeginModal/EndModal, close via ModalActions.
-inline bool BeginModal(const char *id, float width = 360.0f) {
+// fill_host is for when the modal IS the window (a launcher dialog): anchored
+// top-left, no dim backdrop, height still tracking the content so the caller
+// can size its OS window to match.
+inline bool BeginModal(const char *id, float width = 360.0f,
+                       bool fill_host = false) {
   ImGuiViewport *vp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
-                          ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+  if (fill_host) {
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(
+        ImVec2(width > 0.0f ? width : vp->WorkSize.x, 0.0f), ImGuiCond_Always);
+  } else {
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+  }
   // Rounded bordered card, centered title. Title uses a SOLID header-blue (0.45
   // over bg), not a translucent one: ImGui fills the title rect with only that
   // color, so a translucent title would show the dimmed backdrop through it.
   const ImVec4 title_col = theme::over(
       theme::with_alpha(theme::palette::blue, 0.45f), theme::palette::bg);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, theme::metrics::rounding);
+  // The OS window rounds its own corners, so a rounded ImGui window would only
+  // show background through them.
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,
+                      fill_host ? 0.0f : theme::metrics::rounding);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,
                       theme::metrics::border_size);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
   ImGui::PushStyleColor(ImGuiCol_PopupBg, theme::palette::bg);
   ImGui::PushStyleColor(ImGuiCol_TitleBg, title_col);
   ImGui::PushStyleColor(ImGuiCol_TitleBgActive, title_col);
-  bool open = ImGui::BeginPopupModal(
-      id, nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+  ImGui::PushStyleColor(
+      ImGuiCol_ModalWindowDimBg,
+      fill_host ? ImVec4(0.0f, 0.0f, 0.0f, 0.0f)
+                : ImGui::GetStyleColorVec4(ImGuiCol_ModalWindowDimBg));
+  ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove;
+  // The host's own title bar is the dialog's, so this would be a second one.
+  // No scrollbars either: the host is sized to this window's content, so there
+  // is nothing to scroll to.
+  if (fill_host) {
+    flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar |
+             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  }
+  bool open = ImGui::BeginPopupModal(id, nullptr, flags);
   if (!open) {
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
     ImGui::PopStyleVar(3);
   }
   return open;
@@ -181,7 +242,7 @@ inline bool BeginModal(const char *id, float width = 360.0f) {
 
 inline void EndModal() {
   ImGui::EndPopup();
-  ImGui::PopStyleColor(3);
+  ImGui::PopStyleColor(4);
   ImGui::PopStyleVar(3);
 }
 
@@ -212,8 +273,8 @@ inline int ModalActions(const char *primary, const char *secondary = nullptr,
   return result;
 }
 
-// Segmented control: one bar, shared dividers, outer corners rounded. Horizontal
-// if it fits, else stacked. Returns the clicked index, or -1.
+// Segmented control: one bar, shared dividers, outer corners rounded.
+// Horizontal if it fits, else stacked. Returns the clicked index, or -1.
 inline int ButtonGroupSelector(const std::vector<std::string> &options,
                                int current_selection,
                                const ImVec2 &button_size = ImVec2(0, 0)) {
@@ -340,11 +401,10 @@ inline std::vector<OverlaySaved> &overlay_saved_stack() {
 // theme::metrics::overlay_edge as the gap from the canvas edge).
 // EndOverlayCard restores the cursor and content extents, so the card does
 // not disturb the canvas flow or grow the parent window.
-inline void BeginOverlayCard(const char *id, ImVec2 screen_pos,
-                             ImVec2 size = ImVec2(0, 0),
-                             ImGuiChildFlags extra_flags =
-                                 ImGuiChildFlags_AutoResizeX |
-                                 ImGuiChildFlags_AutoResizeY) {
+inline void
+BeginOverlayCard(const char *id, ImVec2 screen_pos, ImVec2 size = ImVec2(0, 0),
+                 ImGuiChildFlags extra_flags = ImGuiChildFlags_AutoResizeX |
+                                               ImGuiChildFlags_AutoResizeY) {
   ImGuiWindow *win = ImGui::GetCurrentWindow();
   detail::overlay_saved_stack().push_back(
       {win->DC.CursorPos, win->DC.CursorMaxPos, win->DC.IdealMaxPos});

@@ -6,7 +6,7 @@
 #include <utility>
 
 // Pan/zoom transform for a 2D world-space canvas. ImGui only.
-namespace egb {
+namespace ui {
 
 // One per canvas. `panning` tracks an in-progress middle-drag.
 struct ViewState {
@@ -35,8 +35,7 @@ view_screen_to_world(const ViewState &vs, ImVec2 canvas_center, ImVec2 sp) {
 
 // Cursor-centered mouse-wheel zoom + middle-drag pan. Mutates `vs`.
 // `hovered` is ImGui::IsItemHovered() on the canvas widget.
-inline void handle_pan_zoom(ViewState &vs, ImVec2 canvas_center,
-                            bool hovered) {
+inline void handle_pan_zoom(ViewState &vs, ImVec2 canvas_center, bool hovered) {
   ImGuiIO &io = ImGui::GetIO();
   if (hovered && io.MouseWheel != 0.0f) {
     auto [wxb, wyb] = view_screen_to_world(vs, canvas_center, io.MousePos);
@@ -58,4 +57,4 @@ inline void handle_pan_zoom(ViewState &vs, ImVec2 canvas_center,
   }
 }
 
-} // namespace egb
+} // namespace ui

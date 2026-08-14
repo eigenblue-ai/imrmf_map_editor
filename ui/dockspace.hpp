@@ -29,8 +29,7 @@ inline ImGuiID BeginDockSpaceHost(const char *title = "##dockspace_host",
   ImGuiID dockspace_id = 0;
   if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable) {
     dockspace_id = ImGui::GetID("##dockspace");
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f),
-                     ImGuiDockNodeFlags_None);
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
   }
   return dockspace_id;
 }

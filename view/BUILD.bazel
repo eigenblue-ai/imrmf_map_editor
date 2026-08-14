@@ -12,16 +12,12 @@ cc_library(
         "canvas_controls.hpp",
         "editor_view.hpp",
     ],
-    target_compatible_with = select({
-        "//config:wasm": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
     deps = [
         "//canvas",
         "//canvas:http_texture_provider",
         "//model",
-        "//third_party/egb_imgui:icons",
-        "//third_party/egb_imgui:widgets",
+        "//ui:icons",
+        "//ui:widgets",
         "@imgui_docking//:imgui",
         "@imgui_docking//:imgui_stdlib",
     ],

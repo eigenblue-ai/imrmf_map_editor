@@ -9,6 +9,9 @@ tmp/
 # docker build staging
 /dist/
 
+# Cargo build dir. Bazel is the build, the Cargo.toml files are for the IDE.
+**/target/
+
 # Bazel
 **/bazel-*
 **/.bazel-*

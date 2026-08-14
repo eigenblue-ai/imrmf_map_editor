@@ -2,6 +2,12 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+_GL_LINKOPTS = select({
+    "@platforms//os:macos": ["-framework OpenGL"],
+    "@platforms//os:linux": ["-lGL"],
+    "//conditions:default": [],  # emscripten links GL itself
+})
+
 cc_library(
     name = "canvas",
     srcs = [
@@ -10,19 +16,17 @@ cc_library(
     ],
     hdrs = [
         "canvas.hpp",
+        "gl.hpp",
         "overlays.hpp",
     ],
-    linkopts = select({
-        "//config:wasm": [],
-        "//conditions:default": ["-lGL"],
-    }),
+    linkopts = _GL_LINKOPTS,
     strip_include_prefix = "/",
     deps = [
         "//model",
-        "//third_party/egb_imgui:icons",
-        "//third_party/egb_imgui:theme",
-        "//third_party/egb_imgui:viewport",
-        "//third_party/egb_imgui:widgets",
+        "//ui:icons",
+        "//ui:theme",
+        "//ui:viewport",
+        "//ui:widgets",
         "@imgui_docking//:imgui",
     ],
 )
@@ -34,10 +38,7 @@ cc_library(
         "//conditions:default": ["stb_image.h"],
     }),
     hdrs = ["http_texture_provider.hpp"],
-    linkopts = select({
-        "//config:wasm": [],
-        "//conditions:default": ["-lGL"],
-    }),
+    linkopts = _GL_LINKOPTS,
     strip_include_prefix = "/",
     deps = [":canvas"] + select({
         "//config:wasm": [],
@@ -52,9 +53,6 @@ cc_library(
         "stb_texture_provider.cpp",
     ],
     hdrs = ["stb_texture_provider.hpp"],
-    linkopts = select({
-        "//config:wasm": [],
-        "//conditions:default": ["-lGL"],
-    }),
+    linkopts = _GL_LINKOPTS,
     deps = [":canvas"],
 )

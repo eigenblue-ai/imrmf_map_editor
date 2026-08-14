@@ -3,11 +3,7 @@
 
 #include "canvas/stb_texture_provider.hpp"
 
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "canvas/gl.hpp"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "canvas/stb_image.h"

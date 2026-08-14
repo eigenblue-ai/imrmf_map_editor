@@ -1,7 +1,66 @@
 load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
+
+_APP_DEPS = [
+    "//model",
+    "//ui:core",
+    "//ui:icons",
+    "//view",
+    "@imgui_docking//:imgui",
+    "@imgui_docking//:platform-glfw",
+    "@imgui_docking//:renderer-opengl3",
+] + select({
+    # The browser gets the picker, REST, and Yjs from JS.
+    "//config:wasm": [],
+    "//conditions:default": [
+        ":platform",
+        "//client_rust:client_ffi",
+    ],
+})
+
+# OS file picker and window chrome. Platforms without them fall back to the
+# in-app browser and the system title bar.
+cc_library(
+    name = "platform",
+    deps = [":platform_hdrs"] + select({
+        "@platforms//os:macos": [":platform_mac"],
+        "//conditions:default": [":platform_stub"],
+    }),
+)
+
+cc_library(
+    name = "platform_hdrs",
+    hdrs = [
+        "file_dialog.hpp",
+        "window_chrome.hpp",
+    ],
+    strip_include_prefix = "/",
+)
+
+# NSOpenPanel and NSWindow, so objc++ rather than cc_library.
+objc_library(
+    name = "platform_mac",
+    srcs = [
+        "file_dialog_mac.mm",
+        "window_chrome_mac.mm",
+    ],
+    linkopts = ["-framework AppKit"],
+    deps = [
+        ":platform_hdrs",
+        "@glfw",
+    ],
+)
+
+cc_library(
+    name = "platform_stub",
+    srcs = [
+        "file_dialog_other.cpp",
+        "window_chrome_other.cpp",
+    ],
+    deps = [":platform_hdrs"],
+)
 
 cc_binary(
     name = "editor_wasm_target",
@@ -9,8 +68,8 @@ cc_binary(
     additional_linker_inputs = select({
         "//config:wasm": [
             "shell_minimal.html",
-            "//third_party/egb_imgui:font_ttf",
-            "//third_party/egb_imgui:font_mdi",
+            "//ui:font_ttf",
+            "//ui:font_mdi",
         ],
         "//conditions:default": [],
     }),
@@ -32,8 +91,8 @@ cc_binary(
             "-sALLOW_MEMORY_GROWTH=1",
             "-sFETCH=1",
             "-sFORCE_FILESYSTEM=1",
-            "--preload-file=$(location //third_party/egb_imgui:font_ttf)@Inter.ttf",
-            "--preload-file=$(location //third_party/egb_imgui:font_mdi)@materialdesignicons-webfont.ttf",
+            "--preload-file=$(location //ui:font_ttf)@Inter.ttf",
+            "--preload-file=$(location //ui:font_mdi)@materialdesignicons-webfont.ttf",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
             "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded",
         ],
@@ -43,18 +102,25 @@ cc_binary(
         "//config:wasm": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [
-        "//model",
-        "//third_party/egb_imgui:core",
-        "//third_party/egb_imgui:icons",
-        "//view",
-        "@imgui_docking//:imgui",
-        "@imgui_docking//:platform-glfw",
-        "@imgui_docking//:renderer-opengl3",
-    ],
+    deps = _APP_DEPS,
 )
 
 wasm_cc_binary(
     name = "editor_wasm",
     cc_target = ":editor_wasm_target",
+)
+
+# Desktop build of the same main.cpp. No server sync, the Yjs hooks are stubs.
+cc_binary(
+    name = "editor",
+    srcs = ["main.cpp"],
+    data = [
+        "//ui:font_mdi",
+        "//ui:font_ttf",
+    ],
+    target_compatible_with = select({
+        "//config:wasm": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = _APP_DEPS,
 )

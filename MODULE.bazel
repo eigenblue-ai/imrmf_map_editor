@@ -12,6 +12,11 @@ bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "glfw", version = "3.3.9")
 bazel_dep(name = "emsdk", version = "4.0.17")
 bazel_dep(name = "rules_shell", version = "0.3.0")
+bazel_dep(name = "apple_support", version = "1.17.1", repo_name = "build_bazel_apple_support")
+
+# Exposed so .bazelrc can name the toolchains in --extra_toolchains.
+apple_cc = use_extension("@build_bazel_apple_support//crosstool:setup.bzl", "apple_cc_configure_extension")
+use_repo(apple_cc, "local_config_apple_cc", "local_config_apple_cc_toolchains")
 
 # rules_ros2 — the patched rmf_building_map_tools provides building_map_server,
 # a ROS2 node that publishes /map at runtime
@@ -196,6 +201,18 @@ crate.spec(
     features = ["behavior-version-latest"],
     package = "aws-sdk-s3",
     version = "1",
+)
+
+# Desktop client: WebSocket + REST against the same server the browser uses.
+crate.spec(
+    features = ["rustls-tls-webpki-roots"],
+    package = "tokio-tungstenite",
+    version = "0.24",
+)
+crate.spec(
+    features = ["json"],
+    package = "ureq",
+    version = "2",
 )
 
 # crc-fast 1.10.0 needs Rust 1.89 (AVX-512). Pin the last 1.88-compatible release.

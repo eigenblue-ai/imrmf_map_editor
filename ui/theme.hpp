@@ -71,7 +71,7 @@ inline const ImVec4 &signal_color(Signal s) {
 // Threshold mapping for higher-is-better metrics: success at/above ok_at,
 // warning at/above warn_at, danger below.
 inline Signal signal_for(float value, float warn_at, float ok_at) {
-  return value >= ok_at   ? Signal::success
+  return value >= ok_at     ? Signal::success
          : value >= warn_at ? Signal::warning
                             : Signal::danger;
 }

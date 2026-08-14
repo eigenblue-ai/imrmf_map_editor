@@ -1,6 +1,31 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
+
+# y-sync protocol + the CRDT<->yaml mapping. Shared with the desktop client.
+rust_library(
+    name = "core",
+    srcs = [
+        "src/lib.rs",
+        "src/sync.rs",
+        "src/yaml_bridge.rs",
+    ],
+    crate_name = "imrmf_core",
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:serde_yaml",
+        "@crates//:tracing",
+        "@crates//:yrs",
+    ],
+)
+
+rust_test(
+    name = "core_test",
+    crate = ":core",
+    edition = "2021",
+)
 
 _SERVER_SRCS = [
     "src/main.rs",
@@ -9,12 +34,11 @@ _SERVER_SRCS = [
     "src/storage/mod.rs",
     "src/storage/local.rs",
     "src/storage/s3.rs",
-    "src/sync.rs",
     "src/validate.rs",
-    "src/yaml_bridge.rs",
 ]
 
 _SERVER_DEPS = [
+    ":core",
     "@crates//:anyhow",
     "@crates//:aws-config",
     "@crates//:aws-credential-types",
@@ -41,17 +65,17 @@ _SERVER_PROC_MACRO_DEPS = ["@crates//:async-trait"]
 rust_binary(
     name = "imrmf_map_editor",
     srcs = _SERVER_SRCS,
-    data = [
-        "@rmf_building_map_tools//:building_map_generator_bin",
-        "@rmf_building_map_tools//:building_map_server_bin",
-    ],
+    data = ["@rmf_building_map_tools//:building_map_generator_bin"] + select({
+        "//config:no_ros2": [],
+        "//conditions:default": ["@rmf_building_map_tools//:building_map_server_bin"],
+    }),
     edition = "2021",
     proc_macro_deps = _SERVER_PROC_MACRO_DEPS,
     deps = _SERVER_DEPS,
 )
 
 rust_test(
-    name = "yaml_bridge_test",
+    name = "server_test",
     srcs = _SERVER_SRCS,
     crate_root = "src/main.rs",
     edition = "2021",

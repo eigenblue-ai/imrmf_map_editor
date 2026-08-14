@@ -4,11 +4,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "canvas/canvas.hpp"
 
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-#else
-#include <GL/gl.h>
-#endif
+#include "canvas/gl.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -252,11 +248,11 @@ MapCanvas::MapCanvas(std::string asset_id, TextureProvider *provider)
     : asset_id_(std::move(asset_id)), provider_(provider) {}
 
 ImVec2 MapCanvas::world_to_screen(double wx, double wy) const {
-  return egb::view_world_to_screen(view_state_, canvas_center_, wx, wy);
+  return ui::view_world_to_screen(view_state_, canvas_center_, wx, wy);
 }
 
 std::pair<double, double> MapCanvas::screen_to_world(ImVec2 sp) const {
-  return egb::view_screen_to_world(view_state_, canvas_center_, sp);
+  return ui::view_screen_to_world(view_state_, canvas_center_, sp);
 }
 
 void MapCanvas::draw(const Building &building, int level_idx,
@@ -604,7 +600,7 @@ void MapCanvas::draw(const Building &building, int level_idx,
 }
 
 void MapCanvas::handle_pan_zoom(bool hovered) {
-  egb::handle_pan_zoom(view_state_, canvas_center_, hovered);
+  ui::handle_pan_zoom(view_state_, canvas_center_, hovered);
 }
 
 } // namespace imrmf::map_editor::canvas

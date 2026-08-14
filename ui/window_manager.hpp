@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace egb {
+namespace ui {
 
 // A tool window managed by WindowManager. Implement draw() with the window
 // body only, the manager owns Begin/End and the visibility flag.
@@ -73,4 +73,4 @@ private:
   std::vector<WindowInterface *> windows_;
 };
 
-} // namespace egb
+} // namespace ui

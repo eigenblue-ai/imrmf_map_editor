@@ -1,6 +1,6 @@
-#include "egb_imgui/schema_ui.hpp"
-#include "egb_imgui/widgets.hpp"
+#include "ui/schema_ui.hpp"
 #include "imgui/imgui.h"
+#include "ui/widgets.hpp"
 #include <algorithm>
 #include <vector>
 

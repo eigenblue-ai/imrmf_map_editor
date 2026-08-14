@@ -16,9 +16,7 @@ use crate::storage::MountConfig;
 mod server;
 mod state;
 mod storage;
-mod sync;
 mod validate;
-mod yaml_bridge;
 
 #[derive(Parser, Debug)]
 #[command(name = "imrmf_map_editor")]

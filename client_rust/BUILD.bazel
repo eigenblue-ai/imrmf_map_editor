@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_static_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Linked into //app:editor. Gives the desktop build the CRDT sync and REST
+# calls the browser gets from JS.
+rust_static_library(
+    name = "client",
+    srcs = ["src/lib.rs"],
+    edition = "2021",
+    deps = [
+        "//server_rust:core",
+        "@crates//:futures-util",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+        "@crates//:tokio-tungstenite",
+        "@crates//:ureq",
+        "@crates//:yrs",
+    ],
+)
+
+cc_library(
+    name = "client_ffi",
+    hdrs = ["client.h"],
+    strip_include_prefix = "/",
+    deps = [":client"],
+)
+
+# Manual: needs a server running. See the file header for how to drive it.
+cc_binary(
+    name = "smoke_test",
+    srcs = ["smoke_test.cpp"],
+    tags = ["manual"],
+    deps = [":client_ffi"],
+)

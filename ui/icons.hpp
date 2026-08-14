@@ -1,7 +1,7 @@
 #pragma once
 
-#include "egb_imgui/IconsMaterialDesignIcons.h"
 #include "imgui/imgui.h"
+#include "ui/IconsMaterialDesignIcons.h"
 #include <filesystem>
 #include <initializer_list>
 
@@ -12,11 +12,11 @@ namespace theme {
 
 // Merge the MDI glyphs in `used` into the atlas at size_px. Call after the text
 // font. Returns null if the .ttf isn't found.
-inline ImFont *
-load_icons(float size_px, std::initializer_list<const char *> used,
-           std::initializer_list<const char *> candidates = {
-               "materialdesignicons-webfont.ttf",
-               "egb_imgui/fonts/materialdesignicons-webfont.ttf"}) {
+inline ImFont *load_icons(float size_px,
+                          std::initializer_list<const char *> used,
+                          std::initializer_list<const char *> candidates = {
+                              "materialdesignicons-webfont.ttf",
+                              "ui/fonts/materialdesignicons-webfont.ttf"}) {
   const char *path = nullptr;
   for (const char *p : candidates) {
     if (p && std::filesystem::exists(p)) {

@@ -7,7 +7,7 @@
 #include <string>
 
 // Value-to-string formatters every tool was rewriting. No ImGui dependency.
-namespace egb {
+namespace ui {
 
 // 1536 -> "1.5 KB". Binary units, one decimal.
 inline std::string human_size(std::uint64_t bytes) {
@@ -67,4 +67,4 @@ inline std::string short_id(const std::string &id, std::size_t n = 12) {
   return id.size() > n ? id.substr(0, n) : id;
 }
 
-} // namespace egb
+} // namespace ui

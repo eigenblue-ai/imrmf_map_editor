@@ -8,9 +8,16 @@
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/imgui.h"
 
-#include "egb_imgui/font.hpp"
-#include "egb_imgui/icons.hpp"
-#include "egb_imgui/theme.hpp"
+#include "ui/font.hpp"
+#include "ui/icons.hpp"
+#include "ui/theme.hpp"
+#include "ui/widgets.hpp"
+
+#ifndef __EMSCRIPTEN__
+#include "app/file_dialog.hpp"
+#include "app/window_chrome.hpp"
+#include "client_rust/client.h"
+#endif
 
 #include "model/building.hpp"
 #include "model/yaml_io.hpp"
@@ -27,11 +34,23 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/html5.h>
+#else
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #endif
 
 using imrmf::map_editor::Building;
 using imrmf::map_editor::EditorState;
 using imrmf::map_editor::EditorView;
+#ifndef __EMSCRIPTEN__
+using imrmf::map_editor::global_cursor_position;
+using imrmf::map_editor::has_custom_titlebar;
+using imrmf::map_editor::has_native_file_picker;
+using imrmf::map_editor::pick_building_yaml;
+using imrmf::map_editor::pick_new_building_yaml;
+using imrmf::map_editor::use_custom_titlebar;
+#endif
 
 namespace {
 
@@ -76,6 +95,8 @@ std::vector<std::string> g_buildings;
 std::string g_error_message;
 
 bool g_locked = false;
+// Browser only: a PUT is in flight and should be followed by a load.
+bool g_pending_create = false;
 std::string g_auto_building;
 
 struct FsEntry {
@@ -225,6 +246,28 @@ EM_JS(void, imrmf_call_load_building,
         window.imrmf._result = {code : 'busy', payload : null};
         window.imrmf
             .loadBuilding(UTF8ToString(server_c), UTF8ToString(building_c))
+            .then(() => { window.imrmf._result = {code : 'ok', payload : null}; })
+            .catch(e => {
+              window.imrmf._result = {code : 'err', payload : String(e)};
+            });
+      });
+
+// PUT a building. Plain fetch, so the JS shell needs no new helper.
+EM_JS(void, imrmf_call_put_building,
+      (const char *server_c, const char *building_c, const char *yaml_c), {
+        if (!window.imrmf)
+          return;
+        window.imrmf._result = {code : 'busy', payload : null};
+        fetch(UTF8ToString(server_c) + '/buildings/' +
+                  encodeURIComponent(UTF8ToString(building_c)),
+              {
+                method : 'PUT',
+                headers : {'content-type' : 'application/yaml'},
+                body : UTF8ToString(yaml_c),
+              })
+            .then(r => r.ok ? r.text() : r.text().then(t => {
+              throw new Error(t || ('status ' + r.status));
+            }))
             .then(() => { window.imrmf._result = {code : 'ok', payload : null}; })
             .catch(e => {
               window.imrmf._result = {code : 'err', payload : String(e)};
@@ -494,11 +537,16 @@ EM_JS(void, imrmf_branch_reset_result, (), {
 // clang-format on
 #else // !__EMSCRIPTEN__
 
-int imrmf_yjs_remote_dirty() { return 0; }
-void imrmf_yjs_clear_remote_dirty() {}
-const char *imrmf_yjs_snapshot_yaml() { return nullptr; }
-void imrmf_yjs_push_local_yaml(const char *) {}
-int imrmf_yjs_is_synced() { return 0; }
+// Backed by //client_rust, same y-sync protocol as the browser.
+int imrmf_yjs_remote_dirty() { return imrmf_client_remote_dirty(); }
+void imrmf_yjs_clear_remote_dirty() { imrmf_client_clear_remote_dirty(); }
+const char *imrmf_yjs_snapshot_yaml() { return imrmf_client_snapshot_yaml(); }
+void imrmf_yjs_push_local_yaml(const char *yaml) {
+  imrmf_client_string_free(imrmf_client_push_yaml(yaml));
+}
+int imrmf_yjs_is_synced() { return imrmf_client_is_synced(); }
+
+// Snapshots and branches are still browser-only.
 void imrmf_call_list_snapshots(const char *, const char *) {}
 void imrmf_call_create_snapshot(const char *, const char *) {}
 void imrmf_call_load_snapshot_yaml(const char *, const char *, const char *) {}
@@ -518,8 +566,16 @@ void imrmf_branch_reset_result() {}
 
 #endif
 
-void mirror_from_yjs() {
+// JS hands back malloc'd strings, the Rust client hands back its own.
+void free_bridge_string(const char *s) {
 #ifdef __EMSCRIPTEN__
+  std::free((void *)s);
+#else
+  imrmf_client_string_free((char *)s);
+#endif
+}
+
+void mirror_from_yjs() {
   if (!imrmf_yjs_remote_dirty())
     return;
   if (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
@@ -531,7 +587,7 @@ void mirror_from_yjs() {
   if (!yaml)
     return;
   std::string body(yaml);
-  std::free((void *)yaml);
+  free_bridge_string(yaml);
   if (body.empty()) {
     imrmf_yjs_clear_remote_dirty();
     return;
@@ -586,15 +642,17 @@ void mirror_from_yjs() {
     std::fprintf(stderr, "[imrmf] yjs mirror parse failed: %s\n", e.what());
   }
   imrmf_yjs_clear_remote_dirty();
-#endif
 }
 
 void push_to_yjs_if_dirty() {
-#ifdef __EMSCRIPTEN__
   if (!g_state.dirty)
     return;
   static double s_last_push = 0.0;
+#ifdef __EMSCRIPTEN__
   const double now = emscripten_get_now() * 0.001;
+#else
+  const double now = glfwGetTime();
+#endif
   const bool any_mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                               ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
                               ImGui::IsMouseDown(ImGuiMouseButton_Right);
@@ -604,7 +662,6 @@ void push_to_yjs_if_dirty() {
   imrmf_yjs_push_local_yaml(yaml.c_str());
   s_last_push = now;
   g_state.dirty = false;
-#endif
 }
 
 void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
@@ -810,15 +867,16 @@ void poll_branch_result() {
 #endif
 }
 
-#ifdef __EMSCRIPTEN__
-std::string take_string(const char *c) {
-  if (!c)
-    return {};
-  std::string s(c);
-  std::free((void *)c);
-  return s;
+// A new map is one empty level, so the editor has somewhere to draw.
+std::string starter_building_yaml(const std::string &name) {
+  Building b;
+  b.name = name;
+  b.levels.emplace_back();
+  b.levels.back().name = "L1";
+  return imrmf::map_editor::serialize_building(b);
 }
 
+// The server's MountConfig, built the same way for both front ends.
 std::string build_mount_json(const ConnectionForm &f) {
   auto esc = [](const char *s) {
     std::string out;
@@ -843,6 +901,15 @@ std::string build_mount_json(const ConnectionForm &f) {
     j += ",\"endpoint_url\":\"" + esc(f.s3_endpoint) + "\"";
   j += "}";
   return j;
+}
+
+#ifdef __EMSCRIPTEN__
+std::string take_string(const char *c) {
+  if (!c)
+    return {};
+  std::string s(c);
+  std::free((void *)c);
+  return s;
 }
 
 void start_mount() {
@@ -900,6 +967,16 @@ void start_load_building() {
   g_phase = ConnPhase::Loading;
   imrmf_reset_result();
   imrmf_call_load_building(g_server_url.c_str(), g_building_id.c_str());
+}
+
+// PUT the starter map, then load it. Follow-up is in poll_async_result.
+void start_create_building(const std::string &id) {
+  g_building_id = id;
+  g_phase = ConnPhase::Loading;
+  g_pending_create = true;
+  imrmf_reset_result();
+  imrmf_call_put_building(g_server_url.c_str(), id.c_str(),
+                          starter_building_yaml(id).c_str());
 }
 
 void start_connect_yjs() {
@@ -1119,7 +1196,14 @@ void poll_async_result() {
     }
     g_error_message = payload.empty() ? "unknown error" : payload;
     g_phase = ConnPhase::Error;
+    g_pending_create = false;
     imrmf_reset_result();
+    return;
+  }
+  if (g_pending_create) {
+    g_pending_create = false;
+    imrmf_reset_result();
+    start_load_building();
     return;
   }
   if (g_phase == ConnPhase::BootingConfig) {
@@ -1192,193 +1276,524 @@ void disconnect_and_reset() {
   g_branches_dirty = true;
 }
 
+#else // !__EMSCRIPTEN__
+
+// Desktop local mode: read and write the yaml directly, no server, no CRDT.
+
+namespace fs = std::filesystem;
+
+std::string g_native_yaml_path;
+
+bool looks_like_building_yaml(const fs::path &p) {
+  const std::string n = p.filename().string();
+  const std::string suffix = ".building.yaml";
+  return n.size() > suffix.size() &&
+         n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// Backs the fallback browser on platforms without an OS file picker.
+void native_fs_list(const std::string &path) {
+  std::error_code ec;
+  fs::path dir = path.empty() ? fs::current_path(ec) : fs::path(path);
+  if (!fs::is_directory(dir, ec)) {
+    g_fs.error = "not a directory: " + dir.string();
+    return;
+  }
+  g_fs.error.clear();
+  g_fs.current_path = dir.string();
+  g_fs.parent_path = dir.has_parent_path() && dir.parent_path() != dir
+                         ? dir.parent_path().string()
+                         : "";
+
+  g_fs.entries.clear();
+  for (fs::directory_iterator
+           it(dir, fs::directory_options::skip_permission_denied, ec),
+       end;
+       it != end && !ec; it.increment(ec)) {
+    const std::string name = it->path().filename().string();
+    if (!name.empty() && name[0] == '.')
+      continue;
+    FsEntry e;
+    e.name = name;
+    e.is_dir = it->is_directory(ec);
+    e.is_building_yaml = !e.is_dir && looks_like_building_yaml(it->path());
+    g_fs.entries.push_back(std::move(e));
+  }
+  std::sort(g_fs.entries.begin(), g_fs.entries.end(),
+            [](const FsEntry &a, const FsEntry &b) {
+              if (a.is_dir != b.is_dir)
+                return a.is_dir;
+              return a.name < b.name;
+            });
+}
+
+// Splits an OK:/ERR: reply and frees the string the client library owns.
+bool take_client_result(char *raw, std::string *payload) {
+  if (!raw) {
+    if (payload)
+      *payload = "no response";
+    return false;
+  }
+  const std::string s(raw);
+  imrmf_client_string_free(raw);
+  const bool okay = s.rfind("OK:", 0) == 0;
+  if (payload)
+    *payload = s.substr(okay ? 3 : (s.rfind("ERR:", 0) == 0 ? 4 : 0));
+  return okay;
+}
+
+// Browser's contract, synchronous: ends at Mounted or Error.
+void start_mount() {
+  g_phase = ConnPhase::Mounting;
+  g_server_url = g_form.server_url;
+
+  std::string payload;
+  if (!take_client_result(imrmf_client_mount(g_server_url.c_str(),
+                                             build_mount_json(g_form).c_str()),
+                          &payload)) {
+    g_error_message = "mount failed: " + payload;
+    g_phase = ConnPhase::Error;
+    return;
+  }
+
+  g_buildings.clear();
+  for (size_t start = 0; start <= payload.size();) {
+    const size_t nl = payload.find('\n', start);
+    const std::string id = payload.substr(
+        start, nl == std::string::npos ? std::string::npos : nl - start);
+    if (!id.empty())
+      g_buildings.push_back(id);
+    if (nl == std::string::npos)
+      break;
+    start = nl + 1;
+  }
+  if (g_buildings.empty()) {
+    g_error_message = "no buildings there";
+    g_phase = ConnPhase::Error;
+    return;
+  }
+  if (g_building_id.empty())
+    g_building_id = g_buildings.front();
+  g_error_message.clear();
+  g_phase = ConnPhase::Mounted;
+}
+
+std::string websocket_url(const std::string &server, const std::string &id) {
+  std::string ws = server;
+  if (ws.rfind("https://", 0) == 0)
+    ws = "wss://" + ws.substr(8);
+  else if (ws.rfind("http://", 0) == 0)
+    ws = "ws://" + ws.substr(7);
+  while (!ws.empty() && ws.back() == '/')
+    ws.pop_back();
+  return ws + "/ws/" + id;
+}
+
+// Loads the building server-side, then joins its CRDT doc over the WebSocket.
+void start_load_building() {
+  g_phase = ConnPhase::Loading;
+
+  std::string payload;
+  if (!take_client_result(imrmf_client_load_building(g_server_url.c_str(),
+                                                     g_building_id.c_str()),
+                          &payload)) {
+    g_error_message = "load failed: " + payload;
+    g_phase = ConnPhase::Error;
+    return;
+  }
+  if (!take_client_result(
+          imrmf_client_connect(
+              websocket_url(g_server_url, g_building_id).c_str()),
+          &payload)) {
+    g_error_message = "connect failed: " + payload;
+    g_phase = ConnPhase::Error;
+    return;
+  }
+
+  g_native_yaml_path.clear(); // server-backed, saving goes through the CRDT
+  g_state = {};
+  g_view = std::make_unique<EditorView>(g_server_url, g_building_id);
+  g_error_message.clear();
+  g_phase = ConnPhase::Connected;
+}
+
+// Takes a *.building.yaml or a directory holding one.
+bool native_open_local(const std::string &path) {
+  std::error_code ec;
+  fs::path p(path);
+  if (fs::is_directory(p, ec)) {
+    fs::path found;
+    for (fs::directory_iterator it(p, ec), end; it != end && !ec;
+         it.increment(ec)) {
+      if (!it->is_directory(ec) && looks_like_building_yaml(it->path())) {
+        found = it->path();
+        break;
+      }
+    }
+    if (found.empty()) {
+      g_error_message = "no *.building.yaml in " + p.string();
+      return false;
+    }
+    p = found;
+  }
+
+  std::ifstream in(p);
+  if (!in) {
+    g_error_message = "cannot read " + p.string();
+    return false;
+  }
+  std::string body((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+
+  try {
+    g_building = imrmf::map_editor::parse_building(body);
+  } catch (const std::exception &e) {
+    g_error_message = std::string("parse failed: ") + e.what();
+    return false;
+  }
+
+  g_native_yaml_path = p.string();
+  g_building_id = p.stem().stem().string();
+  g_state = {};
+  g_view = std::make_unique<EditorView>(std::string(), g_building_id);
+  g_error_message.clear();
+  g_phase = ConnPhase::Connected;
+  return true;
+}
+
+// A directory came from the browser, not a save panel, so name the file.
+bool native_create_local(const std::string &path) {
+  std::error_code ec;
+  fs::path p(path);
+  if (fs::is_directory(p, ec)) {
+    p /= p.filename().string() + ".building.yaml";
+    // The save panel asks about replacing a file, this path has nothing to ask.
+    if (fs::exists(p, ec)) {
+      g_error_message = p.string() + " already exists";
+      return false;
+    }
+  }
+
+  std::ofstream out(p, std::ios::trunc);
+  if (!out) {
+    g_error_message = "cannot create " + p.string();
+    return false;
+  }
+  out << starter_building_yaml(p.stem().stem().string());
+  out.close();
+  return native_open_local(p.string());
+}
+
+// Create is a PUT of the starter map, then the normal load-and-sync path.
+void start_create_building(const std::string &id) {
+  std::string payload;
+  if (!take_client_result(
+          imrmf_client_put_building(g_server_url.c_str(), id.c_str(),
+                                    starter_building_yaml(id).c_str()),
+          &payload)) {
+    g_error_message = "create failed: " + payload;
+    g_phase = ConnPhase::Error;
+    return;
+  }
+  g_building_id = id;
+  start_load_building();
+}
+
+void native_save() {
+  if (g_native_yaml_path.empty())
+    return;
+  std::ofstream out(g_native_yaml_path, std::ios::trunc);
+  if (!out) {
+    g_error_message = "cannot write " + g_native_yaml_path;
+    return;
+  }
+  out << imrmf::map_editor::serialize_building(g_building);
+  g_state.dirty = false;
+}
+
 #endif // __EMSCRIPTEN__
 
-void draw_connection_modal() {
-  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-  ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(640, 0));
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                           ImGuiWindowFlags_NoCollapse;
-  ImGui::Begin("Connect to backend##imrmf", nullptr, flags);
+template <size_t N> void set_field(char (&dst)[N], const std::string &src) {
+  std::strncpy(dst, src.c_str(), N - 1);
+  dst[N - 1] = '\0';
+}
 
-  ImGui::TextWrapped("Choose where your building.yaml lives. The server will "
-                     "mount this backend and serve the editor against it.");
+std::string join_path(const std::string &dir, const std::string &name) {
+  if (dir.empty() || dir.back() == '/')
+    return dir + name;
+  return dir + "/" + name;
+}
+
+// Browser lists through the server, desktop reads the disk. One call site.
+void request_fs_list(const std::string &path) {
+#ifdef __EMSCRIPTEN__
+  start_fs_list(path);
+#else
+  native_fs_list(path);
+#endif
+}
+
+// Fallback picker, for the browser and for platforms with no OS panel.
+void draw_fs_browser(float height) {
+  if (!g_fs.requested_once) {
+    g_fs.requested_once = true;
+    request_fs_list("");
+  }
+  ImGui::InputText("Path", g_form.local_path, sizeof(g_form.local_path));
+  ImGui::TextDisabled("Pick a directory below or paste an absolute path.");
+
   ImGui::Spacing();
+  if (g_fs.loading) {
+    ImGui::TextDisabled("loading...");
+  } else if (!g_fs.error.empty()) {
+    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                       g_fs.error.c_str());
+  }
 
-  ImGui::InputText("Server URL", g_form.server_url, sizeof(g_form.server_url));
+  ImGui::Text("Current:");
   ImGui::SameLine();
-  if (ImGui::SmallButton("origin")) {
-#ifdef __EMSCRIPTEN__
-    std::string origin = take_string(imrmf_default_server_url());
-    std::strncpy(g_form.server_url, origin.c_str(),
-                 sizeof(g_form.server_url) - 1);
-    g_form.server_url[sizeof(g_form.server_url) - 1] = '\0';
-#endif
-  }
-  ImGui::Spacing();
+  ImGui::TextWrapped("%s", g_fs.current_path.empty()
+                               ? "(not loaded)"
+                               : g_fs.current_path.c_str());
 
-  const char *kinds[] = {"Local filesystem", "S3"};
-  ImGui::Combo("Storage", &g_form.kind_idx, kinds, IM_ARRAYSIZE(kinds));
-  ImGui::Spacing();
-
-  if (g_form.kind_idx == 0) {
-#ifdef __EMSCRIPTEN__
-    // On first render in Local mode, kick off a listing of the server's
-    // browse root. The user can then navigate from there.
-    if (!g_fs.requested_once) {
-      g_fs.requested_once = true;
-      start_fs_list("");
-    }
-#endif
-    ImGui::InputText("Path", g_form.local_path, sizeof(g_form.local_path));
-    ImGui::TextDisabled("Pick a directory below or paste an absolute path.");
-
-    ImGui::Spacing();
-    if (g_fs.loading) {
-      ImGui::TextDisabled("loading...");
-    } else if (!g_fs.error.empty()) {
-      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                         g_fs.error.c_str());
-    }
-
-    ImGui::Text("Current:");
+  if (!g_fs.parent_path.empty()) {
+    if (ImGui::SmallButton(".."))
+      request_fs_list(g_fs.parent_path);
     ImGui::SameLine();
-    ImGui::TextWrapped("%s", g_fs.current_path.empty()
-                                 ? "(not loaded)"
-                                 : g_fs.current_path.c_str());
+  }
+  if (ImGui::SmallButton("refresh"))
+    request_fs_list(g_fs.current_path);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("use current"))
+    set_field(g_form.local_path, g_fs.current_path);
 
-    if (!g_fs.parent_path.empty()) {
-      if (ImGui::SmallButton("..")) {
+  ImGui::Spacing();
+  ImGui::BeginChild("##fs_entries", ImVec2(0, height), true);
+  for (const auto &e : g_fs.entries) {
+    const std::string full = join_path(g_fs.current_path, e.name);
+    if (e.is_dir) {
+      if (ImGui::Selectable(("[d] " + e.name).c_str(), false))
+        request_fs_list(full);
+      continue;
+    }
+    const ImVec4 col = e.is_building_yaml ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+                                          : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+#ifndef __EMSCRIPTEN__
+    // Desktop opens the file itself, so let the user click one.
+    if (e.is_building_yaml) {
+      ImGui::PushStyleColor(ImGuiCol_Text, col);
+      if (ImGui::Selectable(("    " + e.name).c_str(), false))
+        set_field(g_form.local_path, full);
+      ImGui::PopStyleColor();
+      continue;
+    }
+#endif
+    ImGui::TextColored(col, "    %s%s", e.name.c_str(),
+                       e.is_building_yaml ? " (building.yaml)" : "");
+  }
+  ImGui::EndChild();
+}
+
+// One dialog for both front ends. Only the OS file picker differs.
+void draw_open_dialog_body() {
+  const bool mounted = !g_buildings.empty();
+  const bool local = g_form.kind_idx == 0;
+  ImGui::TextDisabled("Choose where your building.yaml lives.");
+  ImGuiWidgets::SectionGap();
 #ifdef __EMSCRIPTEN__
-        start_fs_list(g_fs.parent_path);
+  const bool os_picker = false;
+#else
+  const bool os_picker = local && has_native_file_picker();
+#endif
+
+  if (!g_locked) {
+    // Form table, so long labels cannot widen the dialog.
+    if (ImGuiWidgets::BeginFormTable("##open_form")) {
+      // A local file on the desktop is opened directly, so no server involved.
+      if (!os_picker) {
+        ImGuiWidgets::FormRow("Server URL");
+        ImGui::SetNextItemWidth(-FLT_MIN); // fills the cell
+        ImGui::InputText("##server_url", g_form.server_url,
+                         sizeof(g_form.server_url));
+#ifdef __EMSCRIPTEN__
+        ImGui::SameLine();
+        if (ImGui::SmallButton("origin"))
+          set_field(g_form.server_url, take_string(imrmf_default_server_url()));
 #endif
       }
-      ImGui::SameLine();
-    }
-    if (ImGui::SmallButton("refresh")) {
-#ifdef __EMSCRIPTEN__
-      start_fs_list(g_fs.current_path);
-#endif
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("use current")) {
-      std::strncpy(g_form.local_path, g_fs.current_path.c_str(),
-                   sizeof(g_form.local_path) - 1);
-      g_form.local_path[sizeof(g_form.local_path) - 1] = '\0';
-    }
 
-    ImGui::Spacing();
-    ImGui::BeginChild("##fs_entries", ImVec2(0, 220), true);
-    for (const auto &e : g_fs.entries) {
-      if (e.is_dir) {
-        std::string label = "[d] " + e.name;
-        if (ImGui::Selectable(label.c_str(), false)) {
-#ifdef __EMSCRIPTEN__
-          std::string next = g_fs.current_path;
-          if (!next.empty() && next.back() != '/')
-            next.push_back('/');
-          next += e.name;
-          start_fs_list(next);
-#endif
+      ImGuiWidgets::FormRow("Storage");
+      const int kind = ImGuiWidgets::ButtonGroupSelector(
+          {"Local file", "S3 Bucket"}, g_form.kind_idx, ImVec2(0, 0));
+      if (kind >= 0 && kind != g_form.kind_idx) {
+        g_form.kind_idx = kind;
+        g_buildings.clear();
+        g_error_message.clear();
+      }
+
+      if (!local) {
+        struct Field {
+          const char *label;
+          const char *id;
+          char *buffer;
+          size_t size;
+          ImGuiInputTextFlags flags;
+        };
+        const Field fields[] = {
+            {"Bucket", "##bucket", g_form.s3_bucket, sizeof(g_form.s3_bucket),
+             0},
+            {"Prefix", "##prefix", g_form.s3_prefix, sizeof(g_form.s3_prefix),
+             0},
+            {"Region", "##region", g_form.s3_region, sizeof(g_form.s3_region),
+             0},
+            {"Access key id", "##access", g_form.s3_access,
+             sizeof(g_form.s3_access), 0},
+            {"Secret access key", "##secret", g_form.s3_secret,
+             sizeof(g_form.s3_secret), ImGuiInputTextFlags_Password},
+            {"Endpoint url", "##endpoint", g_form.s3_endpoint,
+             sizeof(g_form.s3_endpoint), 0},
+        };
+        for (const Field &f : fields) {
+          ImGuiWidgets::FormRow(f.label);
+          ImGui::SetNextItemWidth(-FLT_MIN);
+          ImGui::InputText(f.id, f.buffer, f.size, f.flags);
         }
-      } else {
-        ImVec4 col = e.is_building_yaml ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
-                                        : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-        ImGui::TextColored(col, "    %s%s", e.name.c_str(),
-                           e.is_building_yaml ? " (building.yaml)" : "");
       }
+
+      ImGui::EndTable();
     }
-    ImGui::EndChild();
-  } else {
-    ImGui::InputText("Bucket", g_form.s3_bucket, sizeof(g_form.s3_bucket));
-    ImGui::InputText("Prefix", g_form.s3_prefix, sizeof(g_form.s3_prefix));
-    ImGui::InputText("Region", g_form.s3_region, sizeof(g_form.s3_region));
-    ImGui::InputText("Access key id", g_form.s3_access,
-                     sizeof(g_form.s3_access));
-    ImGui::InputText("Secret access key", g_form.s3_secret,
-                     sizeof(g_form.s3_secret), ImGuiInputTextFlags_Password);
-    ImGui::InputText("Endpoint url (optional)", g_form.s3_endpoint,
-                     sizeof(g_form.s3_endpoint));
-    ImGui::TextDisabled(
-        "Leave endpoint url empty for AWS. Set it for minio etc.");
+
+    if (local) {
+      ImGuiWidgets::SectionGap();
+      if (os_picker) {
+        ImGui::TextWrapped("Open a building.yaml, or create one. Edits are "
+                           "written straight back to the file.");
+        if (g_form.local_path[0])
+          ImGui::TextDisabled("%s", g_form.local_path);
+      } else {
+        draw_fs_browser(220.0f);
+      }
+    } else if (!mounted) {
+      ImGui::TextDisabled(
+          "Leave the endpoint empty for AWS, set it for minio.");
+    }
   }
 
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
+  // Outside the form: locked mode hides that but still needs the picker.
+  if (mounted && ImGuiWidgets::BeginFormTable("##open_building")) {
+    ImGuiWidgets::FormRow("Building");
+    int selected = 0;
+    for (int i = 0; i < (int)g_buildings.size(); ++i) {
+      if (g_buildings[i] == g_building_id)
+        selected = i;
+    }
+    std::vector<const char *> names;
+    names.reserve(g_buildings.size());
+    for (const auto &b : g_buildings)
+      names.push_back(b.c_str());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("##building", &selected, names.data(), (int)names.size()))
+      g_building_id = g_buildings[selected];
 
-  bool can_connect =
-      g_form.server_url[0] != '\0' ||
-      true; // empty server url falls back to window.location.origin
-  if (g_form.kind_idx == 0)
-    can_connect = can_connect && g_form.local_path[0] != '\0';
-  else {
-    can_connect = can_connect && g_form.s3_bucket[0] && g_form.s3_region[0] &&
-                  g_form.s3_access[0] && g_form.s3_secret[0];
+    if (!g_locked) {
+      ImGuiWidgets::FormRow("New name");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      ImGui::InputText("##new_name", g_form.building_id,
+                       sizeof(g_form.building_id));
+    }
+    ImGui::EndTable();
   }
 
-  if (!can_connect)
-    ImGui::BeginDisabled();
-  if (ImGui::Button("Connect", ImVec2(120, 0))) {
+  if (mounted && !g_locked) {
+    ImGuiWidgets::SectionGap();
+    if (ImGui::SmallButton("Use a different backend")) {
 #ifdef __EMSCRIPTEN__
-    start_mount();
+      disconnect_and_reset();
+#else
+      g_buildings.clear();
+      g_error_message.clear();
+      g_phase = ConnPhase::Modal;
 #endif
+      return;
+    }
   }
-  if (!can_connect)
-    ImGui::EndDisabled();
 
   if (!g_error_message.empty()) {
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                       g_error_message.c_str());
+    ImGuiWidgets::StatusLine(theme::Signal::danger, g_error_message.c_str());
   }
-  ImGui::End();
+
+  // Create: OS save panel for a local file, otherwise a PUT.
+  const char *primary = (os_picker || mounted) ? "Open" : "Connect";
+  // Locked mode hides the name field, leaving Create nothing to use.
+  const char *secondary =
+      (os_picker || mounted) && !g_locked ? "Create" : nullptr;
+
+  bool ready = true;
+  if (!g_locked && !mounted) {
+    ready =
+        os_picker || (local ? g_form.local_path[0] != '\0'
+                            : g_form.s3_bucket[0] && g_form.s3_region[0] &&
+                                  g_form.s3_access[0] && g_form.s3_secret[0]);
+  }
+
+  switch (ImGuiWidgets::ModalActions(primary, secondary, ready)) {
+  case 1:
+#ifndef __EMSCRIPTEN__
+    // Desktop reads local files off disk. No server either way.
+    if (local) {
+      std::string path = g_form.local_path;
+      if (has_native_file_picker()) {
+        path = pick_building_yaml();
+        if (path.empty())
+          return;
+        set_field(g_form.local_path, path);
+      }
+      if (!path.empty())
+        native_open_local(path);
+      return;
+    }
+#endif
+    if (mounted)
+      start_load_building();
+    else
+      start_mount();
+    return;
+  case 2:
+#ifndef __EMSCRIPTEN__
+    if (local) {
+      std::string path = g_form.local_path;
+      if (has_native_file_picker()) {
+        path = pick_new_building_yaml();
+        if (path.empty())
+          return;
+        set_field(g_form.local_path, path);
+      }
+      if (path.empty())
+        g_error_message = "choose where the new file should go";
+      else
+        native_create_local(path);
+      return;
+    }
+#endif
+    if (g_form.building_id[0])
+      start_create_building(g_form.building_id);
+    else
+      g_error_message = "give the new building a name";
+    return;
+  default:
+    return;
+  }
 }
 
-void draw_building_picker() {
-  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-  ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(420, 0));
-  ImGui::Begin("Choose building##imrmf", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                   ImGuiWindowFlags_NoCollapse);
-  int selected = -1;
-  for (int i = 0; i < (int)g_buildings.size(); ++i) {
-    if (g_buildings[i] == g_building_id)
-      selected = i;
+// Floating version, for the browser where the dialog sits over the page.
+void draw_connection_modal() {
+  if (!ImGui::IsPopupOpen("Open a building##imrmf"))
+    ImGui::OpenPopup("Open a building##imrmf");
+  if (ImGuiWidgets::BeginModal("Open a building##imrmf", 560.0f)) {
+    draw_open_dialog_body();
+    ImGuiWidgets::EndModal();
   }
-  if (ImGui::BeginCombo("Building",
-                        selected >= 0 ? g_buildings[selected].c_str() : "")) {
-    for (int i = 0; i < (int)g_buildings.size(); ++i) {
-      bool is_sel = (i == selected);
-      if (ImGui::Selectable(g_buildings[i].c_str(), is_sel)) {
-        g_building_id = g_buildings[i];
-        std::strncpy(g_form.building_id, g_building_id.c_str(),
-                     sizeof(g_form.building_id) - 1);
-        g_form.building_id[sizeof(g_form.building_id) - 1] = '\0';
-      }
-      if (is_sel)
-        ImGui::SetItemDefaultFocus();
-    }
-    ImGui::EndCombo();
-  }
-  ImGui::Spacing();
-  if (ImGui::Button("Open", ImVec2(120, 0))) {
-#ifdef __EMSCRIPTEN__
-    if (!g_building_id.empty())
-      start_load_building();
-#endif
-  }
-  if (!g_locked) {
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
-#ifdef __EMSCRIPTEN__
-      disconnect_and_reset();
-#endif
-    }
-  }
-  ImGui::End();
 }
 
 void draw_busy(const char *label) {
@@ -1451,11 +1866,30 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
   return h;
 }
 
-void frame() {
+void begin_frame() {
   glfwPollEvents();
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
+}
+
+void end_frame() {
+  ImGui::Render();
+  int w, h;
+  glfwGetFramebufferSize(g_window, &w, &h);
+  glViewport(0, 0, w, h);
+  glClearColor(theme::palette::bg.x, theme::palette::bg.y, theme::palette::bg.z,
+               1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+#ifndef __EMSCRIPTEN__
+  glfwSwapBuffers(g_window);
+#endif
+}
+
+void frame() {
+  begin_frame();
 
 #ifdef __EMSCRIPTEN__
   poll_async_result();
@@ -1468,6 +1902,12 @@ void frame() {
     mirror_from_yjs();
     issue_snapshot_requests();
     issue_branch_requests();
+#ifndef __EMSCRIPTEN__
+    if (ImGui::GetIO().KeySuper || ImGui::GetIO().KeyCtrl) {
+      if (ImGui::IsKeyPressed(ImGuiKey_S, false))
+        native_save();
+    }
+#endif
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -1489,10 +1929,12 @@ void frame() {
     ImGui::End();
     if (g_state.snapshot_dir.empty())
       push_to_yjs_if_dirty();
-  } else if (g_phase == ConnPhase::Modal || g_phase == ConnPhase::Error) {
+  }
+#ifdef __EMSCRIPTEN__
+  // Desktop picks its building in the launcher, so it arrives here connected.
+  else if (g_phase == ConnPhase::Modal || g_phase == ConnPhase::Error ||
+           g_phase == ConnPhase::Mounted) {
     draw_connection_modal();
-  } else if (g_phase == ConnPhase::Mounted) {
-    draw_building_picker();
   } else if (g_phase == ConnPhase::BootingConfig) {
     draw_busy("contacting server...");
   } else if (g_phase == ConnPhase::Mounting) {
@@ -1502,37 +1944,143 @@ void frame() {
   } else if (g_phase == ConnPhase::Connecting) {
     draw_busy("connecting...");
   }
+#endif
 
-  ImGui::Render();
-  int w, h;
-  glfwGetFramebufferSize(g_window, &w, &h);
-  glViewport(0, 0, w, h);
-  glClearColor(theme::palette::bg.x, theme::palette::bg.y,
-               theme::palette::bg.z, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  end_frame();
+}
 
-#ifndef __EMSCRIPTEN__
-  glfwSwapBuffers(g_window);
+GLFWwindow *create_window(int w, int h, const char *title, bool decorated,
+                          bool resizable = true) {
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+#ifdef __APPLE__
+  // macOS only offers 3.2+ core, and only forward-compatible.
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#else
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#endif
+  glfwWindowHint(GLFW_DECORATED, decorated ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_RESIZABLE, resizable ? GLFW_TRUE : GLFW_FALSE);
+  GLFWwindow *win = glfwCreateWindow(w, h, title, nullptr, nullptr);
+  if (!win)
+    std::fprintf(stderr, "glfw window failed\n");
+  return win;
+}
+
+void init_backends(GLFWwindow *win) {
+  glfwMakeContextCurrent(win);
+  ImGui_ImplGlfw_InitForOpenGL(win, true);
+#ifdef __EMSCRIPTEN__
+  ImGui_ImplOpenGL3_Init("#version 300 es");
+#elif defined(__APPLE__)
+  ImGui_ImplOpenGL3_Init("#version 150");
+#else
+  ImGui_ImplOpenGL3_Init("#version 330");
 #endif
 }
 
+void shutdown_backends() {
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplGlfw_Shutdown();
+}
+
+#ifndef __EMSCRIPTEN__
+
+void center_window(GLFWwindow *win, int w, int h) {
+  int mx = 0, my = 0, mw = 0, mh = 0;
+  glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), &mx, &my, &mw, &mh);
+  if (mw > 0 && mh > 0)
+    glfwSetWindowPos(win, mx + (mw - w) / 2, my + (mh - h) / 2);
+}
+
+// Runs before the editor window. The window follows the modal's size.
+bool run_launcher() {
+  const int width = 560;
+  // Decorated to keep the shadow and rounded corners.
+  g_window = create_window(width, 240, "Open a building", /*decorated=*/true,
+                           /*resizable=*/false);
+  if (!g_window)
+    return false;
+  if (has_custom_titlebar())
+    use_custom_titlebar(g_window);
+  init_backends(g_window);
+
+  // The modal is the window, so this padding is just a strip around it.
+  const ImVec2 safe_area = ImGui::GetStyle().DisplaySafeAreaPadding;
+  ImGui::GetStyle().DisplaySafeAreaPadding = ImVec2(0.0f, 0.0f);
+
+  bool centred = false;
+  int last_height = 0;
+  while (g_phase != ConnPhase::Connected && !glfwWindowShouldClose(g_window)) {
+    begin_frame();
+    // Re-opening every frame would reset the auto-fit.
+    if (!ImGui::IsPopupOpen("Open a building##imrmf_launcher"))
+      ImGui::OpenPopup("Open a building##imrmf_launcher");
+    float wanted_height = 0.0f;
+    if (ImGuiWidgets::BeginModal("Open a building##imrmf_launcher",
+                                 (float)width,
+                                 /*fill_host=*/true)) {
+      if (has_custom_titlebar()) {
+        // Screen space, or the window's own movement feeds back in.
+        static bool was_held = false;
+        static double grab_x = 0.0, grab_y = 0.0;
+        const bool held = ImGuiWidgets::WindowTitleBar("Open a building");
+        double cursor_x = 0.0, cursor_y = 0.0;
+        if (held && global_cursor_position(&cursor_x, &cursor_y)) {
+          int x = 0, y = 0;
+          glfwGetWindowPos(g_window, &x, &y);
+          if (!was_held) {
+            grab_x = cursor_x - x;
+            grab_y = cursor_y - y;
+          } else {
+            glfwSetWindowPos(g_window, (int)(cursor_x - grab_x),
+                             (int)(cursor_y - grab_y));
+          }
+        }
+        was_held = held;
+        ImGuiWidgets::SectionGap();
+      }
+      draw_open_dialog_body();
+      // GetWindowSize() is clamped to the host, so it could only shrink.
+      const ImGuiWindow *win = ImGui::GetCurrentWindow();
+      wanted_height = win->ContentSizeIdeal.y + win->WindowPadding.y * 2.0f +
+                      win->DecoOuterSizeY1 + win->DecoOuterSizeY2;
+      ImGuiWidgets::EndModal();
+    }
+    end_frame();
+
+    // A fresh popup reports a placeholder size, and resizing to it sticks.
+    int current_w = 0, current_h = 0;
+    glfwGetWindowSize(g_window, &current_w, &current_h);
+    const int height = (int)(wanted_height + 0.5f);
+    if (height > 1 && height == last_height && height != current_h) {
+      glfwSetWindowSize(g_window, width, height);
+      // Only the first fit centres, later ones may have been dragged.
+      if (!centred) {
+        center_window(g_window, width, height);
+        centred = true;
+      }
+    }
+    last_height = height;
+  }
+
+  ImGui::GetStyle().DisplaySafeAreaPadding = safe_area;
+  shutdown_backends();
+  glfwDestroyWindow(g_window);
+  g_window = nullptr;
+  return g_phase == ConnPhase::Connected;
+}
+
+#endif // __EMSCRIPTEN__
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
   if (!glfwInit()) {
     std::fprintf(stderr, "glfw init failed\n");
     return 1;
   }
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-  g_window = glfwCreateWindow(1600, 900, "ImRmfMapEditor", nullptr, nullptr);
-  if (!g_window) {
-    std::fprintf(stderr, "glfw window failed\n");
-    glfwTerminate();
-    return 1;
-  }
-  glfwMakeContextCurrent(g_window);
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -1540,56 +2088,77 @@ int main() {
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;
 
-  theme::apply();
-  theme::load_default_font(16.0f, {"Inter.ttf", "/Inter.ttf"});
-  theme::load_icons(16.0f, {ICON_MDI_CURSOR_DEFAULT,
-                            ICON_MDI_VECTOR_POINT,
-                            ICON_MDI_VECTOR_POLYLINE,
-                            ICON_MDI_WALL,
-                            ICON_MDI_DOOR,
-                            ICON_MDI_RULER,
-                            ICON_MDI_TEXTURE_BOX,
-                            ICON_MDI_VECTOR_POLYGON_VARIANT,
-                            ICON_MDI_LAYERS_EDIT,
-                            ICON_MDI_UNDO,
-                            ICON_MDI_REDO,
-                            ICON_MDI_DELETE,
-                            ICON_MDI_ALIGN_HORIZONTAL_CENTER,
-                            ICON_MDI_ALIGN_VERTICAL_CENTER,
-                            ICON_MDI_CLOSE,
-                            ICON_MDI_ACCOUNT_MULTIPLE,
-                            ICON_MDI_PLUS,
-                            ICON_MDI_MOVE_RESIZE,
-                            ICON_MDI_CHECK,
-                            ICON_MDI_LAYERS,
-                            ICON_MDI_FOLDER_OPEN,
-                            ICON_MDI_FOLDER,
-                            ICON_MDI_FILE_IMAGE,
-                            ICON_MDI_ARROW_UP,
-                            ICON_MDI_REFRESH,
-                            ICON_MDI_UPLOAD});
+  // Beside the binary: the working directory is not ours to assume.
+  const std::string exe = argc > 0 && argv[0] ? argv[0] : "";
+  const std::string inter = exe + ".runfiles/_main/ui/fonts/Inter.ttf";
+  const std::string mdi =
+      exe + ".runfiles/_main/ui/fonts/materialdesignicons-webfont.ttf";
 
-  ImGui_ImplGlfw_InitForOpenGL(g_window, true);
+  theme::apply();
+  theme::load_default_font(16.0f,
+                           {"Inter.ttf", inter.c_str(), "ui/fonts/Inter.ttf"});
+  theme::load_icons(16.0f,
+                    {ICON_MDI_CURSOR_DEFAULT,
+                     ICON_MDI_VECTOR_POINT,
+                     ICON_MDI_VECTOR_POLYLINE,
+                     ICON_MDI_WALL,
+                     ICON_MDI_DOOR,
+                     ICON_MDI_RULER,
+                     ICON_MDI_TEXTURE_BOX,
+                     ICON_MDI_VECTOR_POLYGON_VARIANT,
+                     ICON_MDI_LAYERS_EDIT,
+                     ICON_MDI_UNDO,
+                     ICON_MDI_REDO,
+                     ICON_MDI_DELETE,
+                     ICON_MDI_ALIGN_HORIZONTAL_CENTER,
+                     ICON_MDI_ALIGN_VERTICAL_CENTER,
+                     ICON_MDI_CLOSE,
+                     ICON_MDI_ACCOUNT_MULTIPLE,
+                     ICON_MDI_PLUS,
+                     ICON_MDI_MOVE_RESIZE,
+                     ICON_MDI_CHECK,
+                     ICON_MDI_LAYERS,
+                     ICON_MDI_FOLDER_OPEN,
+                     ICON_MDI_FOLDER,
+                     ICON_MDI_FILE_IMAGE,
+                     ICON_MDI_ARROW_UP,
+                     ICON_MDI_REFRESH,
+                     ICON_MDI_UPLOAD},
+                    {"materialdesignicons-webfont.ttf", mdi.c_str(),
+                     "ui/fonts/materialdesignicons-webfont.ttf"});
+
 #ifdef __EMSCRIPTEN__
-  ImGui_ImplOpenGL3_Init("#version 300 es");
+  g_window = create_window(1600, 900, "ImRmfMapEditor", true);
+  if (!g_window) {
+    glfwTerminate();
+    return 1;
+  }
+  init_backends(g_window);
   ImGui_ImplGlfw_InstallEmscriptenCallbacks(g_window, "#canvas");
   imrmf_init_state();
   start_boot_config();
-#else
-  ImGui_ImplOpenGL3_Init("#version 330");
-#endif
-
-#ifdef __EMSCRIPTEN__
   emscripten_set_main_loop(frame, 0, 1);
 #else
+  // Pick the building first. The editor window opens only once that succeeds.
+  if (!run_launcher()) {
+    ImGui::DestroyContext();
+    glfwTerminate();
+    return 0;
+  }
+
+  g_window = create_window(1600, 900, "ImRmfMapEditor", true);
+  if (!g_window) {
+    glfwTerminate();
+    return 1;
+  }
+  init_backends(g_window);
   while (!glfwWindowShouldClose(g_window))
     frame();
+  shutdown_backends();
+  glfwDestroyWindow(g_window);
 #endif
 
-  ImGui_ImplOpenGL3_Shutdown();
-  ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();
-  glfwDestroyWindow(g_window);
   glfwTerminate();
   return 0;
 }

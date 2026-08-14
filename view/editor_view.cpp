@@ -7,8 +7,8 @@
 #include "imgui/imgui.h"
 #include "imgui/misc/cpp/imgui_stdlib.h"
 
-#include "egb_imgui/icons.hpp"
-#include "egb_imgui/widgets.hpp"
+#include "ui/icons.hpp"
+#include "ui/widgets.hpp"
 
 #include "model/yaml_io.hpp"
 #include "view/canvas_controls.hpp"
@@ -1494,8 +1494,8 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     if (nv > 0 || nl > 0) {
       ImGui::AlignTextToFramePadding();
       if (nv > 0 && nl > 0)
-        ImGui::TextColored(theme::palette::info,
-                           "%d vertex / %d lane%s", nv, nl, nl == 1 ? "" : "s");
+        ImGui::TextColored(theme::palette::info, "%d vertex / %d lane%s", nv,
+                           nl, nl == 1 ? "" : "s");
       else if (nv > 0)
         ImGui::TextColored(theme::palette::info, "%d vertex%s", nv,
                            nv == 1 ? "" : "es");
@@ -3764,9 +3764,9 @@ void EditorView::draw_status_bar(const EditorState &state) {
   if (yjs && yjs[0]) {
     bool ok = std::strcmp(yjs, "connected") == 0 && map_editor_yjs_synced();
     const theme::Signal sig = ok ? theme::Signal::success
-                             : std::strcmp(yjs, "connecting") == 0
-                                 ? theme::Signal::warning
-                                 : theme::Signal::danger;
+                              : std::strcmp(yjs, "connecting") == 0
+                                  ? theme::Signal::warning
+                                  : theme::Signal::danger;
     ImGui::PushStyleColor(ImGuiCol_Text, theme::signal_color(sig));
     ImGui::Text("collab: %s%s", yjs, ok ? " (synced)" : "");
     ImGui::PopStyleColor();

@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include "egb_imgui/viewport.hpp"
 #include "imgui/imgui.h"
 #include "model/building.hpp"
+#include "ui/viewport.hpp"
 
 #include <functional>
 #include <optional>
@@ -17,7 +17,7 @@
 namespace imrmf::map_editor::canvas {
 
 // Pan/zoom state and transforms come from the shared UI kit.
-using ViewState = egb::ViewState;
+using ViewState = ui::ViewState;
 
 enum class LoadStatus { NotStarted, Loading, Ok, Failed };
 
