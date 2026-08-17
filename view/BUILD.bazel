@@ -16,9 +16,14 @@ cc_library(
         "//canvas",
         "//canvas:http_texture_provider",
         "//model",
+        "//model:asset_paths",
         "//ui:icons",
         "//ui:widgets",
         "@imgui_docking//:imgui",
         "@imgui_docking//:imgui_stdlib",
-    ],
+    ] + select({
+        # Undo/redo goes through the desktop CRDT client, the browser uses JS.
+        "//config:wasm": [],
+        "//conditions:default": ["//client_rust:client_ffi"],
+    }),
 )

@@ -17,6 +17,11 @@ COPY dist/server_rust/imrmf_map_editor.runfiles /opt/imrmf/imrmf_map_editor.runf
 
 COPY dist/app/editor_wasm /opt/imrmf/www
 
+# Apache-2.0 and the OFL both want their text to travel with what they cover,
+# and the wasm bundle has the two fonts preloaded into it.
+COPY LICENSE NOTICE THIRD_PARTY_LICENSES.md /opt/imrmf/licenses/
+COPY ui/fonts/OFL.txt ui/fonts/MDI-LICENSE /opt/imrmf/licenses/
+
 COPY docker_entrypoint.sh /opt/imrmf/entrypoint.sh
 RUN chmod +x /opt/imrmf/entrypoint.sh /opt/imrmf/imrmf_map_editor
 

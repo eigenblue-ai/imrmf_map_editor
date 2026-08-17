@@ -9,15 +9,30 @@ use yrs::{
     Transact, TransactionMut,
 };
 
-const ROOT_KEY: &str = "building";
+pub const ROOT_KEY: &str = "building";
 
 pub fn seed_doc(doc: &Doc, yaml_text: &str) -> Result<()> {
     let root = doc.get_or_insert_map(ROOT_KEY);
     let mut txn = doc.transact_mut();
+    seed_in_txn(&root, &mut txn, yaml_text)
+}
 
-    let keys: Vec<String> = root.iter(&txn).map(|(k, _)| k.to_string()).collect();
+/// Same, but tagging the transaction with an origin. The desktop client uses it
+/// so its UndoManager can tell local edits from ones arriving over sync.
+pub fn seed_doc_with_origin<O: Into<yrs::Origin>>(
+    doc: &Doc,
+    yaml_text: &str,
+    origin: O,
+) -> Result<()> {
+    let root = doc.get_or_insert_map(ROOT_KEY);
+    let mut txn = doc.transact_mut_with(origin);
+    seed_in_txn(&root, &mut txn, yaml_text)
+}
+
+fn seed_in_txn(root: &yrs::MapRef, txn: &mut yrs::TransactionMut, yaml_text: &str) -> Result<()> {
+    let keys: Vec<String> = root.iter(txn).map(|(k, _)| k.to_string()).collect();
     for k in keys {
-        root.remove(&mut txn, &k);
+        root.remove(txn, &k);
     }
     if yaml_text.trim().is_empty() {
         return Ok(());
@@ -29,7 +44,7 @@ pub fn seed_doc(doc: &Doc, yaml_text: &str) -> Result<()> {
         serde_yaml::Value::Mapping(map) => {
             for (k, v) in map {
                 let Some(key) = k.as_str() else { continue };
-                insert_value_into_map(&mut txn, &root, key, &v)?;
+                insert_value_into_map(txn, root, key, &v)?;
             }
             Ok(())
         }
@@ -166,8 +181,16 @@ fn read_value<T: ReadTxn>(txn: &T, value: &Out) -> Result<serde_yaml::Value> {
 }
 
 fn read_map<T: ReadTxn>(txn: &T, map: &MapRef) -> Result<serde_yaml::Value> {
+    // Sorted, because a yrs map branch is a std HashMap whose iteration order is
+    // seeded per process and reshuffles as the map is mutated. Unsorted, the
+    // same document serialises differently in every client, which moves `levels`
+    // around under anything tracking a level by position.
+    let mut keys: Vec<&str> = map.iter(txn).map(|(k, _)| k).collect();
+    keys.sort_unstable();
+
     let mut out = serde_yaml::Mapping::new();
-    for (k, v) in map.iter(txn) {
+    for k in keys {
+        let Some(v) = map.get(txn, k) else { continue };
         out.insert(
             serde_yaml::Value::String(k.to_string()),
             read_value(txn, &v)?,

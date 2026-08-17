@@ -23,3 +23,34 @@ cc_test(
     srcs = ["yaml_io_test.cpp"],
     deps = [":model"],
 )
+
+# No zip and no UI, so path handling costs the editor nothing extra.
+cc_library(
+    name = "asset_paths",
+    srcs = ["asset_paths.cpp"],
+    hdrs = ["asset_paths.hpp"],
+    strip_include_prefix = "/",
+    deps = [":model"],
+)
+
+cc_library(
+    name = "map_bundle",
+    srcs = ["map_bundle.cpp"],
+    hdrs = ["map_bundle.hpp"],
+    strip_include_prefix = "/",
+    deps = [
+        ":asset_paths",
+        ":model",
+        "//third_party/miniz",
+        "@nlohmann_json//:json",
+    ],
+)
+
+cc_test(
+    name = "map_bundle_test",
+    srcs = ["map_bundle_test.cpp"],
+    deps = [
+        ":map_bundle",
+        "//third_party/miniz",
+    ],
+)

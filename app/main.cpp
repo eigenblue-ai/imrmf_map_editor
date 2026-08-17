@@ -19,14 +19,20 @@
 #include "client_rust/client.h"
 #endif
 
+#include "canvas/http_texture_provider.hpp"
+#include "canvas/stb_texture_provider.hpp"
+#include "model/asset_paths.hpp"
 #include "model/building.hpp"
+#include "model/map_bundle.hpp"
 #include "model/yaml_io.hpp"
 #include "view/editor_view.hpp"
 #include "yaml-cpp/yaml.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,14 +47,18 @@
 #endif
 
 using imrmf::map_editor::Building;
+using imrmf::map_editor::BundleError;
 using imrmf::map_editor::EditorState;
 using imrmf::map_editor::EditorView;
+using imrmf::map_editor::MapBundle;
+namespace mecanvas = imrmf::map_editor::canvas;
 #ifndef __EMSCRIPTEN__
+using imrmf::map_editor::FileKind;
 using imrmf::map_editor::global_cursor_position;
 using imrmf::map_editor::has_custom_titlebar;
 using imrmf::map_editor::has_native_file_picker;
-using imrmf::map_editor::pick_building_yaml;
-using imrmf::map_editor::pick_new_building_yaml;
+using imrmf::map_editor::pick_open_path;
+using imrmf::map_editor::pick_save_path;
 using imrmf::map_editor::use_custom_titlebar;
 #endif
 
@@ -65,6 +75,46 @@ std::string g_active_snapshot_dir;
 bool g_snapshots_dirty = true;
 bool g_branches_dirty = true;
 
+// Set when the map came from a .rmfmap bundle. Ctrl+S rewrites that file.
+std::string g_native_bundle_path;
+std::shared_ptr<mecanvas::AssetBlobs> g_bundle_blobs;
+// Nothing to mount, mirror, snapshot or branch, and no CRDT to push into.
+bool g_bundle_session = false; // the map came from a .rmfmap, not a backend
+std::string g_bundle_name;     // what to call it in the UI
+bool g_serverless_session = false;
+
+// A desktop client has no page origin to resolve the asset route against, so
+// it has to name the server.
+std::unique_ptr<mecanvas::TextureProvider> make_server_texture_provider() {
+  auto p = std::make_unique<mecanvas::HttpTextureProvider>();
+#ifndef __EMSCRIPTEN__
+  p->set_base_url(g_server_url);
+#endif
+  return p;
+}
+
+std::string bundle_yaml_name() {
+  return (g_building_id.empty() ? std::string("map") : g_building_id) +
+         ".building.yaml";
+}
+
+#ifdef __EMSCRIPTEN__
+std::vector<std::string> current_asset_paths() {
+  std::vector<std::string> out;
+  for (const std::string *ref :
+       imrmf::map_editor::building_asset_refs(g_building)) {
+    if (std::find(out.begin(), out.end(), *ref) == out.end())
+      out.push_back(*ref);
+  }
+  return out;
+}
+#endif // __EMSCRIPTEN__
+
+MapBundle pack_current_bundle(const imrmf::map_editor::AssetReader &read) {
+  return imrmf::map_editor::collect_bundle(g_building, bundle_yaml_name(),
+                                           read);
+}
+
 enum class ConnPhase {
   BootingConfig, // GET /config in flight (decides whether to show modal)
   Modal,         // showing the connection dialog
@@ -76,8 +126,17 @@ enum class ConnPhase {
   Error,         // last operation failed
 };
 
+// Stands in for a credential the server holds but never sends.
+constexpr const char *kSecretMask = "\xE2\x97\x8F\xE2\x97\x8F\xE2\x97\x8F"
+                                    "\xE2\x97\x8F\xE2\x97\x8F\xE2\x97\x8F"
+                                    "\xE2\x97\x8F\xE2\x97\x8F";
+
 struct ConnectionForm {
-  int kind_idx = 0; // 0 = Local, 1 = S3
+  int kind_idx = 0;         // 0 = Local, 1 = S3
+  int local_format_idx = 0; // 0 = building.yaml, 1 = full map (.rmfmap)
+  // True while a credential field still shows the server's masked value.
+  bool s3_secret_is_server_held = false;
+  bool s3_access_is_server_held = false;
   char server_url[256] = "";
   char local_path[512] = "";
   char s3_bucket[128] = "";
@@ -95,6 +154,35 @@ std::vector<std::string> g_buildings;
 std::string g_error_message;
 
 bool g_locked = false;
+// The server holds a credential we can fall back to, so the form needs none.
+bool g_server_has_s3_secret = false;
+bool g_server_has_s3_access = false;
+// Desktop: closing a file returns to the launcher instead of quitting the app.
+bool g_request_relaunch = false;
+
+// Building picker mode once a backend is up: 0 = open existing, 1 = create new.
+int g_building_mode = 0;
+
+std::string connection_summary() {
+  std::string out;
+  if (g_form.kind_idx == 0) {
+    out = g_form.local_path[0] ? g_form.local_path : "local files";
+  } else {
+    out = g_form.s3_bucket[0] ? g_form.s3_bucket : "S3";
+    if (g_form.s3_prefix[0]) {
+      out += "/";
+      out += g_form.s3_prefix;
+    }
+    if (!g_state.branch.empty()) {
+      out += " \xC2\xB7 ";
+      out += g_state.branch;
+    }
+  }
+  out += " \xC2\xB7 ";
+  out += std::to_string(g_buildings.size());
+  out += g_buildings.size() == 1 ? " building" : " buildings";
+  return out;
+}
 // Browser only: a PUT is in flight and should be followed by a load.
 bool g_pending_create = false;
 std::string g_auto_building;
@@ -103,6 +191,7 @@ struct FsEntry {
   std::string name;
   bool is_dir = false;
   bool is_building_yaml = false;
+  bool is_map_bundle = false;
 };
 
 struct FsBrowser {
@@ -603,9 +692,27 @@ void mirror_from_yjs() {
           }
         }
       }
+      // The CRDT stores levels in a map, so the order they come back in is not
+      // ours to rely on. Follow the level by name, or a mirror silently moves
+      // the view to a different floor.
+      std::string level_name;
+      if (g_state.level_idx >= 0 &&
+          g_state.level_idx < (int)g_building.levels.size())
+        level_name = g_building.levels[g_state.level_idx].name;
+
       g_building = std::move(b);
-      g_state.level_idx = std::max(
-          0, std::min(g_state.level_idx, (int)g_building.levels.size() - 1));
+
+      int found = -1;
+      for (int i = 0; i < (int)g_building.levels.size(); ++i) {
+        if (g_building.levels[i].name == level_name) {
+          found = i;
+          break;
+        }
+      }
+      g_state.level_idx =
+          found >= 0 ? found
+                     : std::max(0, std::min(g_state.level_idx,
+                                            (int)g_building.levels.size() - 1));
       const auto &cur = g_building.levels[g_state.level_idx];
       g_state.selected_vertices.erase(
           std::remove_if(
@@ -895,12 +1002,76 @@ std::string build_mount_json(const ConnectionForm &f) {
   j += ",\"bucket\":\"" + esc(f.s3_bucket) + "\"";
   j += ",\"prefix\":\"" + esc(f.s3_prefix) + "\"";
   j += ",\"region\":\"" + esc(f.s3_region) + "\"";
-  j += ",\"access_key_id\":\"" + esc(f.s3_access) + "\"";
-  j += ",\"secret_access_key\":\"" + esc(f.s3_secret) + "\"";
+  // An untouched mask submits empty, and the server reuses its own value.
+  j += ",\"access_key_id\":\"" +
+       (f.s3_access_is_server_held ? std::string() : esc(f.s3_access)) + "\"";
+  j += ",\"secret_access_key\":\"" +
+       (f.s3_secret_is_server_held ? std::string() : esc(f.s3_secret)) + "\"";
   if (f.s3_endpoint[0])
     j += ",\"endpoint_url\":\"" + esc(f.s3_endpoint) + "\"";
   j += "}";
   return j;
+}
+
+template <size_t N> void set_field(char (&dst)[N], const std::string &src);
+
+std::string json_string_field(const std::string &src, const std::string &key) {
+  std::string needle = "\"" + key + "\":\"";
+  auto pos = src.find(needle);
+  if (pos == std::string::npos)
+    return {};
+  pos += needle.size();
+  std::string out;
+  while (pos < src.size() && src[pos] != '"') {
+    if (src[pos] == '\\' && pos + 1 < src.size()) {
+      out.push_back(src[pos + 1]);
+      pos += 2;
+    } else {
+      out.push_back(src[pos++]);
+    }
+  }
+  return out;
+}
+
+bool json_bool_field(const std::string &src, const std::string &key) {
+  std::string needle = "\"" + key + "\":";
+  auto pos = src.find(needle);
+  if (pos == std::string::npos)
+    return false;
+  pos += needle.size();
+  while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t'))
+    ++pos;
+  return src.compare(pos, 4, "true") == 0;
+}
+
+// Applies GET /config. Credentials are never in the payload, only whether the
+// server holds one, so those fields get a mask.
+void apply_server_config(const std::string &payload) {
+  g_locked = json_bool_field(payload, "locked");
+  g_state.branch = json_string_field(payload, "branch");
+  const std::string backend = json_string_field(payload, "backend");
+  if (backend == "s3")
+    g_form.kind_idx = 1;
+  else if (backend == "local")
+    g_form.kind_idx = 0;
+
+  if (backend == "s3") {
+    set_field(g_form.s3_bucket, json_string_field(payload, "bucket"));
+    set_field(g_form.s3_prefix, json_string_field(payload, "prefix"));
+    set_field(g_form.s3_region, json_string_field(payload, "region"));
+    set_field(g_form.s3_endpoint, json_string_field(payload, "endpoint_url"));
+    // Both submit empty, which the server reads as "reuse what you have".
+    g_server_has_s3_secret = json_bool_field(payload, "has_secret_access_key");
+    g_server_has_s3_access = json_bool_field(payload, "has_access_key_id");
+    g_form.s3_secret_is_server_held = g_server_has_s3_secret;
+    g_form.s3_access_is_server_held = g_server_has_s3_access;
+    if (g_form.s3_secret_is_server_held)
+      set_field(g_form.s3_secret, kSecretMask);
+    if (g_form.s3_access_is_server_held)
+      set_field(g_form.s3_access, kSecretMask);
+  } else if (backend == "local") {
+    set_field(g_form.local_path, json_string_field(payload, "path"));
+  }
 }
 
 #ifdef __EMSCRIPTEN__
@@ -981,7 +1152,10 @@ void start_create_building(const std::string &id) {
 
 void start_connect_yjs() {
   g_phase = ConnPhase::Connecting;
-  g_view = std::make_unique<EditorView>(g_server_url, g_building_id);
+  g_serverless_session = false;
+  g_bundle_session = false;
+  g_view = std::make_unique<EditorView>(make_server_texture_provider(),
+                                        g_building_id);
   imrmf_reset_result();
   imrmf_call_connect(g_server_url.c_str(), g_building_id.c_str());
 }
@@ -1082,34 +1256,6 @@ void start_fs_list(const std::string &path) {
 
 // Minimal JSON string extractor: pulls "<key>":"<value>" with naive escape
 // handling. Good enough for the well-known /fs/list response we control.
-std::string json_string_field(const std::string &src, const std::string &key) {
-  std::string needle = "\"" + key + "\":\"";
-  auto pos = src.find(needle);
-  if (pos == std::string::npos)
-    return {};
-  pos += needle.size();
-  std::string out;
-  while (pos < src.size() && src[pos] != '"') {
-    if (src[pos] == '\\' && pos + 1 < src.size()) {
-      out.push_back(src[pos + 1]);
-      pos += 2;
-    } else {
-      out.push_back(src[pos++]);
-    }
-  }
-  return out;
-}
-
-bool json_bool_field(const std::string &src, const std::string &key) {
-  std::string needle = "\"" + key + "\":";
-  auto pos = src.find(needle);
-  if (pos == std::string::npos)
-    return false;
-  pos += needle.size();
-  while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t'))
-    ++pos;
-  return src.compare(pos, 4, "true") == 0;
-}
 
 void parse_fs_list_payload(const std::string &payload) {
   g_fs.entries.clear();
@@ -1207,15 +1353,11 @@ void poll_async_result() {
     return;
   }
   if (g_phase == ConnPhase::BootingConfig) {
-    g_locked = json_bool_field(payload, "locked");
-    g_state.branch = json_string_field(payload, "branch");
-    std::string backend = json_string_field(payload, "backend");
-    if (backend == "s3")
-      g_form.kind_idx = 1;
-    else if (backend == "local")
-      g_form.kind_idx = 0;
-    if (g_locked) {
-      g_auto_building = json_string_field(payload, "auto_building");
+    apply_server_config(payload);
+    g_auto_building = json_string_field(payload, "auto_building");
+    // A server that mounted at startup already has a backend, locked or not.
+    const bool has_backend = !json_string_field(payload, "backend").empty();
+    if (g_locked || (has_backend && !g_auto_building.empty())) {
       start_list_buildings();
     } else {
       g_phase = ConnPhase::Modal;
@@ -1230,7 +1372,7 @@ void poll_async_result() {
       g_phase = ConnPhase::Error;
     } else {
       g_phase = ConnPhase::Mounted;
-      if (g_locked && !g_auto_building.empty() &&
+      if (!g_auto_building.empty() &&
           std::find(g_buildings.begin(), g_buildings.end(), g_auto_building) !=
               g_buildings.end()) {
         g_building_id = g_auto_building;
@@ -1265,6 +1407,7 @@ void poll_async_result() {
 void disconnect_and_reset() {
   imrmf_session_clear();
   imrmf_call_disconnect(g_server_url.c_str());
+  // g_locked stays, since the server still rejects /mount in single-mount mode.
   g_phase = ConnPhase::Modal;
   g_view.reset();
   g_building = {};
@@ -1284,11 +1427,17 @@ namespace fs = std::filesystem;
 
 std::string g_native_yaml_path;
 
-bool looks_like_building_yaml(const fs::path &p) {
-  const std::string n = p.filename().string();
-  const std::string suffix = ".building.yaml";
+bool has_suffix(const std::string &n, const std::string &suffix) {
   return n.size() > suffix.size() &&
          n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool looks_like_building_yaml(const fs::path &p) {
+  return has_suffix(p.filename().string(), ".building.yaml");
+}
+
+bool looks_like_map_bundle(const fs::path &p) {
+  return has_suffix(p.filename().string(), imrmf::map_editor::kBundleExtension);
 }
 
 // Backs the fallback browser on platforms without an OS file picker.
@@ -1317,6 +1466,7 @@ void native_fs_list(const std::string &path) {
     e.name = name;
     e.is_dir = it->is_directory(ec);
     e.is_building_yaml = !e.is_dir && looks_like_building_yaml(it->path());
+    e.is_map_bundle = !e.is_dir && looks_like_map_bundle(it->path());
     g_fs.entries.push_back(std::move(e));
   }
   std::sort(g_fs.entries.begin(), g_fs.entries.end(),
@@ -1340,6 +1490,19 @@ bool take_client_result(char *raw, std::string *payload) {
   if (payload)
     *payload = s.substr(okay ? 3 : (s.rfind("ERR:", 0) == 0 ? 4 : 0));
   return okay;
+}
+
+// The desktop equivalent of the browser's boot fetch, for prefilling the form.
+void native_probe_server_config() {
+  if (g_form.server_url[0] == '\0')
+    return;
+  std::string payload;
+  if (take_client_result(imrmf_client_fetch_config(g_form.server_url),
+                         &payload)) {
+    const std::string saved_url = g_form.server_url;
+    apply_server_config(payload);
+    set_field(g_form.server_url, saved_url);
+  }
 }
 
 // Browser's contract, synchronous: ends at Mounted or Error.
@@ -1411,10 +1574,24 @@ void start_load_building() {
   }
 
   g_native_yaml_path.clear(); // server-backed, saving goes through the CRDT
+  g_native_bundle_path.clear();
+  g_bundle_blobs.reset();
+  g_serverless_session = false;
+  g_bundle_session = false;
   g_state = {};
-  g_view = std::make_unique<EditorView>(g_server_url, g_building_id);
+  g_view = std::make_unique<EditorView>(make_server_texture_provider(),
+                                        g_building_id);
   g_error_message.clear();
   g_phase = ConnPhase::Connected;
+}
+
+bool read_file_bytes(const fs::path &p, std::vector<unsigned char> *out) {
+  std::ifstream in(p, std::ios::binary);
+  if (!in)
+    return false;
+  out->assign(std::istreambuf_iterator<char>(in),
+              std::istreambuf_iterator<char>());
+  return true;
 }
 
 // Takes a *.building.yaml or a directory holding one.
@@ -1452,11 +1629,68 @@ bool native_open_local(const std::string &path) {
     return false;
   }
 
+  // Rewrite absolute paths that live under the yaml so the map stays movable.
+  const fs::path base = p.parent_path();
+  for (std::string *ref : imrmf::map_editor::building_asset_refs(g_building))
+    *ref = imrmf::map_editor::relativize_asset_path(*ref, base);
+
   g_native_yaml_path = p.string();
+  g_native_bundle_path.clear();
+  g_bundle_blobs.reset();
+  g_serverless_session = true;
+  g_bundle_session = false;
+  g_bundle_name.clear();
   g_building_id = p.stem().stem().string();
   g_state = {};
-  g_view = std::make_unique<EditorView>(std::string(), g_building_id);
+  g_view = std::make_unique<EditorView>(
+      std::make_unique<mecanvas::StbTextureProvider>(base), g_building_id);
   g_error_message.clear();
+  g_phase = ConnPhase::Connected;
+  return true;
+}
+
+// Nothing is unpacked to disk. Ctrl+S repacks the bundle in place.
+bool native_open_bundle(const std::string &path) {
+  fs::path p(path);
+  std::vector<unsigned char> bytes;
+  if (!read_file_bytes(p, &bytes) || bytes.empty()) {
+    g_error_message = "cannot read " + p.string();
+    return false;
+  }
+
+  MapBundle bundle;
+  try {
+    bundle = imrmf::map_editor::read_bundle(bytes.data(), bytes.size());
+  } catch (const std::exception &e) {
+    g_error_message = std::string("not a usable map bundle: ") + e.what();
+    return false;
+  }
+
+  auto blobs = std::make_shared<mecanvas::AssetBlobs>();
+  for (auto &a : bundle.assets)
+    (*blobs)[a.path] = std::move(a.bytes);
+
+  g_building = std::move(bundle.building);
+  g_bundle_blobs = std::move(blobs);
+  g_native_bundle_path = p.string();
+  g_native_yaml_path.clear();
+  g_serverless_session = true;
+  g_bundle_session = true;
+  g_bundle_name = p.filename().string();
+  g_building_id = fs::path(bundle.yaml_name).stem().stem().string();
+  if (g_building_id.empty())
+    g_building_id = p.stem().string();
+  g_state = {};
+
+  auto provider = std::make_unique<mecanvas::StbTextureProvider>();
+  provider->set_blobs(g_bundle_blobs);
+  g_view = std::make_unique<EditorView>(std::move(provider), g_building_id);
+
+  g_error_message.clear();
+  if (!bundle.missing.empty()) {
+    g_state.status_message = std::to_string(bundle.missing.size()) +
+                             " image(s) missing from the bundle";
+  }
   g_phase = ConnPhase::Connected;
   return true;
 }
@@ -1484,6 +1718,40 @@ bool native_create_local(const std::string &path) {
   return native_open_local(p.string());
 }
 
+bool native_create_bundle(const std::string &path) {
+  std::error_code ec;
+  fs::path p(path);
+  if (fs::is_directory(p, ec))
+    p /= p.filename().string() + imrmf::map_editor::kBundleExtension;
+  if (!looks_like_map_bundle(p))
+    p += imrmf::map_editor::kBundleExtension;
+  if (fs::exists(p, ec) && !has_native_file_picker()) {
+    g_error_message = p.string() + " already exists";
+    return false;
+  }
+
+  const std::string id = p.stem().string();
+  MapBundle bundle;
+  bundle.yaml_name = id + ".building.yaml";
+  try {
+    bundle.building =
+        imrmf::map_editor::parse_building(starter_building_yaml(id));
+    const std::vector<unsigned char> bytes =
+        imrmf::map_editor::write_bundle(bundle);
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      g_error_message = "cannot create " + p.string();
+      return false;
+    }
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+              (std::streamsize)bytes.size());
+  } catch (const std::exception &e) {
+    g_error_message = std::string("create failed: ") + e.what();
+    return false;
+  }
+  return native_open_bundle(p.string());
+}
+
 // Create is a PUT of the starter map, then the normal load-and-sync path.
 void start_create_building(const std::string &id) {
   std::string payload;
@@ -1499,7 +1767,75 @@ void start_create_building(const std::string &id) {
   start_load_building();
 }
 
+bool native_write_bundle(const std::string &path) {
+  if (!g_view) {
+    g_error_message = "nothing to save";
+    return false;
+  }
+  mecanvas::TextureProvider *provider = g_view->texture_provider();
+  MapBundle bundle = pack_current_bundle(
+      [provider](const std::string &p, std::vector<unsigned char> *out) {
+        return provider && provider->read_asset(p, out);
+      });
+
+  std::vector<unsigned char> bytes;
+  try {
+    bytes = imrmf::map_editor::write_bundle(bundle);
+  } catch (const std::exception &e) {
+    g_error_message = std::string("pack failed: ") + e.what();
+    return false;
+  }
+
+  fs::path p(path);
+  if (!looks_like_map_bundle(p))
+    p += imrmf::map_editor::kBundleExtension;
+
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    g_error_message = "cannot write " + p.string();
+    return false;
+  }
+  out.write(reinterpret_cast<const char *>(bytes.data()),
+            (std::streamsize)bytes.size());
+  if (!out) {
+    g_error_message = "write failed: " + p.string();
+    return false;
+  }
+  out.close();
+
+  g_state.status_message = bundle.missing.empty()
+                               ? "saved " + p.filename().string()
+                               : "saved " + p.filename().string() + " — " +
+                                     std::to_string(bundle.missing.size()) +
+                                     " image(s) missing";
+  g_error_message.clear();
+  return true;
+}
+
+void reset_for_relaunch() {
+  g_view.reset();
+  g_building = {};
+  g_snapshot_building = {};
+  g_state = {};
+  g_building_id.clear();
+  g_buildings.clear();
+  g_native_yaml_path.clear();
+  g_native_bundle_path.clear();
+  g_bundle_blobs.reset();
+  g_bundle_session = false;
+  g_bundle_name.clear();
+  g_serverless_session = false;
+  g_error_message.clear();
+  g_request_relaunch = false;
+  g_phase = ConnPhase::Modal;
+}
+
 void native_save() {
+  if (!g_native_bundle_path.empty()) {
+    if (native_write_bundle(g_native_bundle_path))
+      g_state.dirty = false;
+    return;
+  }
   if (g_native_yaml_path.empty())
     return;
   std::ofstream out(g_native_yaml_path, std::ios::trunc);
@@ -1526,6 +1862,7 @@ std::string join_path(const std::string &dir, const std::string &name) {
 
 // Browser lists through the server, desktop reads the disk. One call site.
 void request_fs_list(const std::string &path) {
+
 #ifdef __EMSCRIPTEN__
   start_fs_list(path);
 #else
@@ -1576,11 +1913,13 @@ void draw_fs_browser(float height) {
         request_fs_list(full);
       continue;
     }
-    const ImVec4 col = e.is_building_yaml ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
-                                          : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+    const bool want_bundle = g_form.local_format_idx == 1;
+    const bool openable = want_bundle ? e.is_map_bundle : e.is_building_yaml;
+    const ImVec4 col = openable ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+                                : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
 #ifndef __EMSCRIPTEN__
     // Desktop opens the file itself, so let the user click one.
-    if (e.is_building_yaml) {
+    if (openable) {
       ImGui::PushStyleColor(ImGuiCol_Text, col);
       if (ImGui::Selectable(("    " + e.name).c_str(), false))
         set_field(g_form.local_path, full);
@@ -1589,16 +1928,253 @@ void draw_fs_browser(float height) {
     }
 #endif
     ImGui::TextColored(col, "    %s%s", e.name.c_str(),
-                       e.is_building_yaml ? " (building.yaml)" : "");
+                       e.is_building_yaml ? " (building.yaml)"
+                       : e.is_map_bundle  ? " (full map)"
+                                          : "");
   }
   ImGui::EndChild();
 }
+
+#ifdef __EMSCRIPTEN__
+
+// JS fetches the images, the zip is built here, so the format has one writer.
+std::map<std::string, std::vector<unsigned char>> g_bundle_staging;
+std::vector<unsigned char> g_bundle_bytes;
+std::string g_bundle_filename;
+std::string g_bundle_error;
+
+// Object URLs so the worker path decodes off the render thread. A 10 MB png
+// decoded inline in wasm stalls the frame and skips the 2048 px downscale.
+EM_JS(void, imrmf_js_clear_bundle_assets, (), {
+  const m = (window.imrmf && window.imrmf._bundleAssets) || null;
+  if (m) {
+    for (const k in m)
+      URL.revokeObjectURL(m[k]);
+  }
+  if (window.imrmf)
+    window.imrmf._bundleAssets = {};
+});
+
+EM_JS(void, imrmf_js_register_bundle_asset,
+      (const char *path_c, const unsigned char *data, int len), {
+        if (!window.imrmf)
+          window.imrmf = {};
+        if (!window.imrmf._bundleAssets)
+          window.imrmf._bundleAssets = {};
+        const bytes = HEAPU8.slice(data, data + len);
+        window.imrmf._bundleAssets[UTF8ToString(path_c)] =
+            URL.createObjectURL(new Blob([bytes]));
+      });
+
+EM_JS(const char *, imrmf_js_bundle_asset_url, (const char *path_c), {
+  const m = (window.imrmf && window.imrmf._bundleAssets) || {};
+  return stringToNewUTF8(m[UTF8ToString(path_c)] || "");
+});
+
+EM_JS(void, imrmf_js_open_map_bundle, (), {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.rmfmap,application/zip';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f)
+      return;
+    f.arrayBuffer().then(buf => {
+      const bytes = new Uint8Array(buf);
+      const ptr = _malloc(Math.max(1, bytes.length));
+      HEAPU8.set(bytes, ptr);
+      const namePtr = stringToNewUTF8(f.name || 'map.rmfmap');
+      Module._imrmf_bundle_open(ptr, bytes.length, namePtr);
+      _free(namePtr);
+      _free(ptr);
+    });
+  };
+  inp.click();
+});
+
+// Paths arrive newline-joined, which the yaml format's filenames never contain.
+EM_JS(void, imrmf_js_download_map,
+      (const char *server_c, const char *id_c, const char *paths_c,
+       const char *name_c), {
+        const id = UTF8ToString(id_c);
+        const name = UTF8ToString(name_c);
+        const raw = UTF8ToString(paths_c);
+        const paths = raw ? raw.split('\n').filter(p => p.length) : [];
+        let base = UTF8ToString(server_c) || window.location.origin || "";
+        while (base.length && base[base.length - 1] === '/')
+          base = base.slice(0, -1);
+
+        const feed = (path, buf) => {
+          const bytes = new Uint8Array(buf);
+          const pathPtr = stringToNewUTF8(path);
+          const dataPtr = _malloc(Math.max(1, bytes.length));
+          HEAPU8.set(bytes, dataPtr);
+          Module._imrmf_bundle_add_asset(pathPtr, dataPtr, bytes.length);
+          _free(dataPtr);
+          _free(pathPtr);
+        };
+
+        Promise
+            .all(paths.map(
+                p => fetch(base + "/layer_asset?id=" + encodeURIComponent(id) +
+                           "&path=" + encodeURIComponent(p))
+                         .then(r => r.ok ? r.arrayBuffer() : null)
+                         // A missing image is reported, not fatal.
+                         .then(buf => { if (buf) feed(p, buf); })
+                         .catch(e => {
+                           console.warn('[imrmf] asset fetch failed:', p, e);
+                         })))
+            .then(() => {
+              const len = Module._imrmf_bundle_build();
+              if (len <= 0) {
+                console.error('[imrmf] bundle build failed');
+                Module._imrmf_bundle_release();
+                return;
+              }
+              const ptr = Module._imrmf_bundle_data();
+              const blob = new Blob([ HEAPU8.slice(ptr, ptr + len) ],
+                                    {type : 'application/zip'});
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = name;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 10000);
+              Module._imrmf_bundle_release();
+            });
+      });
+
+void start_browser_download() {
+  g_bundle_staging.clear();
+  g_bundle_bytes.clear();
+  g_bundle_error.clear();
+  g_bundle_filename =
+      (g_building_id.empty() ? std::string("map") : g_building_id) +
+      imrmf::map_editor::kBundleExtension;
+
+  // A bundle already holds its images and may have no server to ask.
+  mecanvas::TextureProvider *provider =
+      g_view ? g_view->texture_provider() : nullptr;
+  std::string joined;
+  for (const std::string &p : current_asset_paths()) {
+    // The original bytes. The provider only keeps downscaled textures.
+    if (g_bundle_blobs) {
+      auto it = g_bundle_blobs->find(p);
+      if (it != g_bundle_blobs->end() && !it->second.empty()) {
+        g_bundle_staging[p] = it->second;
+        continue;
+      }
+    }
+    std::vector<unsigned char> bytes;
+    if (provider && provider->read_asset(p, &bytes) && !bytes.empty()) {
+      g_bundle_staging[p] = std::move(bytes);
+      continue;
+    }
+    if (!joined.empty())
+      joined += '\n';
+    joined += p;
+  }
+  g_state.status_message = "packing map...";
+  imrmf_js_download_map(g_server_url.c_str(), g_building_id.c_str(),
+                        joined.c_str(), g_bundle_filename.c_str());
+}
+
+#endif // __EMSCRIPTEN__
+
+#ifndef __EMSCRIPTEN__
+bool g_save_bundle_modal = false;
+char g_save_bundle_name[256] = "";
+
+// Linux has no OS save panel, so Download needs somewhere to put the file.
+void draw_save_bundle_modal() {
+  if (g_save_bundle_modal) {
+    ImGui::OpenPopup("Save map as##save_bundle");
+    g_save_bundle_modal = false;
+    if (g_fs.current_path.empty())
+      request_fs_list("");
+  }
+  if (!ImGuiWidgets::BeginModal("Save map as##save_bundle", 520.0f))
+    return;
+
+  ImGui::TextDisabled("Pick a folder, then name the file. An absolute path in "
+                      "the name field is used as-is.");
+  ImGui::Spacing();
+  ImGui::Text("Folder:");
+  ImGui::SameLine();
+  ImGui::TextWrapped("%s", g_fs.current_path.empty()
+                               ? "(not loaded)"
+                               : g_fs.current_path.c_str());
+  if (!g_fs.parent_path.empty()) {
+    if (ImGui::SmallButton(".."))
+      request_fs_list(g_fs.parent_path);
+    ImGui::SameLine();
+  }
+  if (ImGui::SmallButton("refresh"))
+    request_fs_list(g_fs.current_path);
+  if (!g_fs.error.empty())
+    ImGuiWidgets::StatusLine(theme::Signal::danger, g_fs.error.c_str());
+
+  ImGui::BeginChild("##save_dirs", ImVec2(0, 200.0f), true);
+  for (const auto &e : g_fs.entries) {
+    if (e.is_dir) {
+      if (ImGui::Selectable(("[d] " + e.name).c_str(), false))
+        request_fs_list(join_path(g_fs.current_path, e.name));
+    } else if (e.is_map_bundle) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.9f, 0.4f, 1.0f));
+      if (ImGui::Selectable(("    " + e.name).c_str(), false))
+        set_field(g_save_bundle_name, e.name);
+      ImGui::PopStyleColor();
+    }
+  }
+  ImGui::EndChild();
+
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  ImGui::InputText("##save_name", g_save_bundle_name,
+                   sizeof(g_save_bundle_name));
+
+  const std::string target =
+      fs::path(g_save_bundle_name).is_absolute()
+          ? std::string(g_save_bundle_name)
+          : join_path(g_fs.current_path, g_save_bundle_name);
+  std::error_code ec;
+  if (g_save_bundle_name[0] && fs::exists(fs::path(target), ec))
+    ImGuiWidgets::StatusLine(theme::Signal::warning,
+                             "replaces an existing file");
+
+  const int a = ImGuiWidgets::ModalActions("Save", "Cancel",
+                                           g_save_bundle_name[0] != '\0');
+  if (a == 1) {
+    native_write_bundle(target);
+    ImGui::CloseCurrentPopup();
+  } else if (a == 2) {
+    ImGui::CloseCurrentPopup();
+  }
+  ImGuiWidgets::EndModal();
+}
+
+void request_download_map() {
+  const std::string suggested =
+      (g_building_id.empty() ? std::string("map") : g_building_id) +
+      imrmf::map_editor::kBundleExtension;
+  if (has_native_file_picker()) {
+    const std::string path = pick_save_path(FileKind::MapBundle, suggested);
+    if (!path.empty())
+      native_write_bundle(path);
+    return;
+  }
+  set_field(g_save_bundle_name, suggested);
+  g_save_bundle_modal = true;
+}
+#endif // !__EMSCRIPTEN__
 
 // One dialog for both front ends. Only the OS file picker differs.
 void draw_open_dialog_body() {
   const bool mounted = !g_buildings.empty();
   const bool local = g_form.kind_idx == 0;
-  ImGui::TextDisabled("Choose where your building.yaml lives.");
+  ImGui::TextDisabled(g_locked ? "This server serves one fixed backend."
+                               : "Choose where your building.yaml lives.");
   ImGuiWidgets::SectionGap();
 #ifdef __EMSCRIPTEN__
   const bool os_picker = false;
@@ -1606,15 +2182,55 @@ void draw_open_dialog_body() {
   const bool os_picker = local && has_native_file_picker();
 #endif
 
+  // A locked server rejects /mount, so the backend form would only error.
+#ifdef __EMSCRIPTEN__
+  if (g_locked && !mounted) {
+    ImGui::TextWrapped(
+        "The backend was chosen when the server started%s%s. You can reconnect "
+        "to it, or open a map file instead.",
+        g_state.branch.empty() ? "" : " on branch ",
+        g_state.branch.empty() ? "" : g_state.branch.c_str());
+#ifdef __EMSCRIPTEN__
+    ImGuiWidgets::SectionGap();
+    if (ImGui::Button(ICON_MDI_FOLDER_OPEN " Open a .rmfmap file"))
+      imrmf_js_open_map_bundle();
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped(
+        "Picks from the machine running this browser, not from the server. "
+        "The map is then held in memory and Download map is the only way to "
+        "keep changes.");
+    ImGui::PopStyleColor();
+#endif
+    if (!g_error_message.empty()) {
+      ImGui::Spacing();
+      ImGuiWidgets::StatusLine(theme::Signal::danger, g_error_message.c_str());
+    }
+    if (ImGuiWidgets::ModalActions("Reconnect") == 1)
+      start_list_buildings();
+    return;
+  }
+#endif
+
   if (!g_locked) {
     // Form table, so long labels cannot widen the dialog.
     if (ImGuiWidgets::BeginFormTable("##open_form")) {
-      // A local file on the desktop is opened directly, so no server involved.
-      if (!os_picker) {
+      // The browser needs a server even for a local file, since it does the
+      // read.
+#ifdef __EMSCRIPTEN__
+      const bool needs_server_url = true;
+#else
+      const bool needs_server_url = !local;
+#endif
+      if (needs_server_url) {
         ImGuiWidgets::FormRow("Server URL");
         ImGui::SetNextItemWidth(-FLT_MIN); // fills the cell
         ImGui::InputText("##server_url", g_form.server_url,
                          sizeof(g_form.server_url));
+#ifndef __EMSCRIPTEN__
+        if (ImGui::IsItemDeactivatedAfterEdit())
+          native_probe_server_config();
+#endif
 #ifdef __EMSCRIPTEN__
         ImGui::SameLine();
         if (ImGui::SmallButton("origin"))
@@ -1629,6 +2245,21 @@ void draw_open_dialog_body() {
         g_form.kind_idx = kind;
         g_buildings.clear();
         g_error_message.clear();
+#ifndef __EMSCRIPTEN__
+        if (g_form.kind_idx == 1)
+          native_probe_server_config();
+#endif
+      }
+
+      if (local) {
+        ImGuiWidgets::FormRow("Format");
+        const int fmt = ImGuiWidgets::ButtonGroupSelector(
+            {"building.yaml", "Full map (.rmfmap)"}, g_form.local_format_idx,
+            ImVec2(0, 0));
+        if (fmt >= 0 && fmt != g_form.local_format_idx) {
+          g_form.local_format_idx = fmt;
+          g_error_message.clear();
+        }
       }
 
       if (!local) {
@@ -1656,7 +2287,32 @@ void draw_open_dialog_body() {
         for (const Field &f : fields) {
           ImGuiWidgets::FormRow(f.label);
           ImGui::SetNextItemWidth(-FLT_MIN);
-          ImGui::InputText(f.id, f.buffer, f.size, f.flags);
+          const bool is_secret = (f.buffer == g_form.s3_secret);
+          const bool is_access = (f.buffer == g_form.s3_access);
+          bool *held = is_secret   ? &g_form.s3_secret_is_server_held
+                       : is_access ? &g_form.s3_access_is_server_held
+                                   : nullptr;
+          // The mask is already dots, no need to hide dots behind asterisks.
+          ImGuiInputTextFlags flags = f.flags;
+          if (held && *held)
+            flags &= ~ImGuiInputTextFlags_Password;
+          ImGui::InputText(f.id, f.buffer, f.size, flags);
+          // Clear on focus, so a replacement is not appended to the mask.
+          if (held && *held && ImGui::IsItemActivated()) {
+            *held = false;
+            f.buffer[0] = '\0';
+          }
+        }
+        if (g_server_has_s3_secret || g_server_has_s3_access) {
+          ImGuiWidgets::FormRow("");
+          ImGui::PushStyleColor(
+              ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+          ImGui::TextWrapped(
+              g_form.s3_secret_is_server_held
+                  ? "Credentials stay on the server. Leave them masked to "
+                    "reuse them, or type to replace them."
+                  : "Leave a credential empty to reuse the server's.");
+          ImGui::PopStyleColor();
         }
       }
 
@@ -1665,56 +2321,122 @@ void draw_open_dialog_body() {
 
     if (local) {
       ImGuiWidgets::SectionGap();
+      const bool bundle_fmt = g_form.local_format_idx == 1;
+#ifdef __EMSCRIPTEN__
+      if (bundle_fmt) {
+        ImGui::TextWrapped(
+            "Picks a .rmfmap from the machine running this browser, not from "
+            "the server. It is edited in memory: no collaboration and no "
+            "autosave, and Download map is how you keep your changes.");
+        ImGui::Spacing();
+        if (ImGui::Button(ICON_MDI_FOLDER_OPEN " Choose a .rmfmap file"))
+          imrmf_js_open_map_bundle();
+        if (!g_error_message.empty()) {
+          ImGui::Spacing();
+          ImGuiWidgets::StatusLine(theme::Signal::danger,
+                                   g_error_message.c_str());
+        }
+        return;
+      }
+#endif
       if (os_picker) {
-        ImGui::TextWrapped("Open a building.yaml, or create one. Edits are "
-                           "written straight back to the file.");
+        ImGui::TextWrapped(
+            bundle_fmt
+                ? "Open a .rmfmap map bundle. It stays in memory — the images "
+                  "are never unpacked to disk, and saving rewrites the bundle."
+                : "Open a building.yaml, or create one. Edits are written "
+                  "straight back to the file.");
         if (g_form.local_path[0])
           ImGui::TextDisabled("%s", g_form.local_path);
       } else {
         draw_fs_browser(220.0f);
       }
     } else if (!mounted) {
-      ImGui::TextDisabled(
-          "Leave the endpoint empty for AWS, set it for minio.");
+      ImGui::TextDisabled("Leave the endpoint empty for AWS, set it for an "
+                          "S3-compatible service.");
     }
   }
 
-  // Outside the form: locked mode hides that but still needs the picker.
-  if (mounted && ImGuiWidgets::BeginFormTable("##open_building")) {
-    ImGuiWidgets::FormRow("Building");
-    int selected = 0;
-    for (int i = 0; i < (int)g_buildings.size(); ++i) {
-      if (g_buildings[i] == g_building_id)
-        selected = i;
-    }
-    std::vector<const char *> names;
-    names.reserve(g_buildings.size());
-    for (const auto &b : g_buildings)
-      names.push_back(b.c_str());
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##building", &selected, names.data(), (int)names.size()))
-      g_building_id = g_buildings[selected];
+  if (mounted) {
+    ImGuiWidgets::SectionGap();
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(theme::palette::success, ICON_MDI_CIRCLE_MEDIUM);
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::TextColored(theme::palette::success, "Connected");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", connection_summary().c_str());
 
     if (!g_locked) {
-      ImGuiWidgets::FormRow("New name");
-      ImGui::SetNextItemWidth(-FLT_MIN);
-      ImGui::InputText("##new_name", g_form.building_id,
-                       sizeof(g_form.building_id));
-    }
-    ImGui::EndTable();
-  }
-
-  if (mounted && !g_locked) {
-    ImGuiWidgets::SectionGap();
-    if (ImGui::SmallButton("Use a different backend")) {
+      const float w = ImGui::CalcTextSize(ICON_MDI_CLOSE).x +
+                      ImGui::GetStyle().FramePadding.x * 2.0f;
+      ImGui::SameLine();
+      const float x = ImGui::GetContentRegionMax().x - w;
+      if (x > ImGui::GetCursorPosX())
+        ImGui::SetCursorPosX(x);
+      const bool drop = ImGui::SmallButton(ICON_MDI_CLOSE "##drop_backend");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Disconnect and choose a different backend");
+      if (drop) {
 #ifdef __EMSCRIPTEN__
-      disconnect_and_reset();
+        disconnect_and_reset();
 #else
-      g_buildings.clear();
-      g_error_message.clear();
-      g_phase = ConnPhase::Modal;
+        g_buildings.clear();
+        g_error_message.clear();
+        g_phase = ConnPhase::Modal;
 #endif
-      return;
+        return;
+      }
+    }
+
+    ImGuiWidgets::SectionGap();
+
+    // With nothing to open, the only action left is to make one.
+    const bool has_any = !g_buildings.empty();
+    if (!has_any || g_locked)
+      g_building_mode = has_any ? 0 : 1;
+
+    if (ImGuiWidgets::BeginFormTable("##open_building")) {
+      if (has_any && !g_locked) {
+        ImGuiWidgets::FormRow("Building");
+        const int m = ImGuiWidgets::ButtonGroupSelector(
+            {"Open existing", "Create new"}, g_building_mode, ImVec2(0, 0));
+        if (m >= 0 && m != g_building_mode) {
+          g_building_mode = m;
+          g_error_message.clear();
+        }
+      }
+
+      if (g_building_mode == 0) {
+        ImGuiWidgets::FormRow(has_any && !g_locked ? "Open" : "Building");
+        int selected = 0;
+        for (int i = 0; i < (int)g_buildings.size(); ++i) {
+          if (g_buildings[i] == g_building_id)
+            selected = i;
+        }
+        std::vector<const char *> names;
+        names.reserve(g_buildings.size());
+        for (const auto &b : g_buildings)
+          names.push_back(b.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##building", &selected, names.data(),
+                         (int)names.size()))
+          g_building_id = g_buildings[selected];
+      } else {
+        ImGuiWidgets::FormRow("New name");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##new_name", g_form.building_id,
+                         sizeof(g_form.building_id));
+      }
+      ImGui::EndTable();
+    }
+
+    if (!has_any) {
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      ImGui::TextWrapped("This backend has no buildings yet, so name one to "
+                         "start from an empty map.");
+      ImGui::PopStyleColor();
     }
   }
 
@@ -1723,18 +2445,29 @@ void draw_open_dialog_body() {
     ImGuiWidgets::StatusLine(theme::Signal::danger, g_error_message.c_str());
   }
 
-  // Create: OS save panel for a local file, otherwise a PUT.
-  const char *primary = (os_picker || mounted) ? "Open" : "Connect";
-  // Locked mode hides the name field, leaving Create nothing to use.
+  // Desktop reads local files itself, the browser goes through the server.
+#ifdef __EMSCRIPTEN__
+  const bool opens_a_file = os_picker;
+#else
+  const bool opens_a_file = local;
+#endif
+  const bool creating = mounted && g_building_mode == 1;
+  const char *primary = creating                    ? "Create"
+                        : (opens_a_file || mounted) ? "Open"
+                                                    : "Connect";
+  // No mounted list on desktop, and the file may not exist yet.
   const char *secondary =
-      (os_picker || mounted) && !g_locked ? "Create" : nullptr;
+      (opens_a_file && !mounted && !g_locked) ? "Create" : nullptr;
 
   bool ready = true;
-  if (!g_locked && !mounted) {
-    ready =
-        os_picker || (local ? g_form.local_path[0] != '\0'
-                            : g_form.s3_bucket[0] && g_form.s3_region[0] &&
-                                  g_form.s3_access[0] && g_form.s3_secret[0]);
+  if (creating) {
+    ready = g_form.building_id[0] != '\0';
+  } else if (!g_locked && !mounted) {
+    ready = os_picker ||
+            (local ? g_form.local_path[0] != '\0'
+                   : g_form.s3_bucket[0] && g_form.s3_region[0] &&
+                         (g_form.s3_access[0] || g_server_has_s3_access) &&
+                         (g_form.s3_secret[0] || g_server_has_s3_secret));
   }
 
   switch (ImGuiWidgets::ModalActions(primary, secondary, ready)) {
@@ -1742,35 +2475,56 @@ void draw_open_dialog_body() {
 #ifndef __EMSCRIPTEN__
     // Desktop reads local files off disk. No server either way.
     if (local) {
+      const bool bundle = g_form.local_format_idx == 1;
       std::string path = g_form.local_path;
       if (has_native_file_picker()) {
-        path = pick_building_yaml();
+        path = pick_open_path(bundle ? FileKind::MapBundle
+                                     : FileKind::BuildingYaml);
         if (path.empty())
           return;
         set_field(g_form.local_path, path);
       }
-      if (!path.empty())
+      if (path.empty())
+        return;
+      if (bundle)
+        native_open_bundle(path);
+      else
         native_open_local(path);
       return;
     }
 #endif
-    if (mounted)
-      start_load_building();
-    else
+    if (mounted) {
+      if (g_building_mode == 1) {
+        if (g_form.building_id[0])
+          start_create_building(g_form.building_id);
+        else
+          g_error_message = "give the new building a name";
+      } else {
+        start_load_building();
+      }
+    } else {
       start_mount();
+    }
     return;
   case 2:
 #ifndef __EMSCRIPTEN__
     if (local) {
+      const bool bundle = g_form.local_format_idx == 1;
       std::string path = g_form.local_path;
       if (has_native_file_picker()) {
-        path = pick_new_building_yaml();
+        path = pick_save_path(
+            bundle ? FileKind::MapBundle : FileKind::BuildingYaml,
+            bundle
+                ? std::string("untitled") + imrmf::map_editor::kBundleExtension
+                : std::string("untitled.building.yaml"));
         if (path.empty())
           return;
         set_field(g_form.local_path, path);
       }
       if (path.empty())
         g_error_message = "choose where the new file should go";
+      else if (bundle)
+        native_create_bundle(path);
       else
         native_create_local(path);
       return;
@@ -1790,7 +2544,10 @@ void draw_open_dialog_body() {
 void draw_connection_modal() {
   if (!ImGui::IsPopupOpen("Open a building##imrmf"))
     ImGui::OpenPopup("Open a building##imrmf");
-  if (ImGuiWidgets::BeginModal("Open a building##imrmf", 560.0f)) {
+  // Not dismissable, there is no app behind this until a building is chosen.
+  if (ImGuiWidgets::BeginModal("Open a building##imrmf", 560.0f,
+                               /*fill_host=*/false,
+                               /*dismissable=*/false)) {
     draw_open_dialog_body();
     ImGuiWidgets::EndModal();
   }
@@ -1809,7 +2566,13 @@ void draw_busy(const char *label) {
 imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
   imrmf::map_editor::TopBarHooks h;
   std::string summary;
-  if (g_form.kind_idx == 0) {
+  if (g_bundle_session) {
+    summary = "Map file";
+    if (!g_bundle_name.empty()) {
+      summary += " \xC2\xB7 ";
+      summary += g_bundle_name;
+    }
+  } else if (g_form.kind_idx == 0) {
     summary = "Local";
     if (g_form.local_path[0]) {
       summary += " \xC2\xB7 ";
@@ -1834,23 +2597,40 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
 
   std::string details;
   auto add = [&](const char *k, const std::string &v) {
-    if (!v.empty()) {
-      details += k;
-      details += ": ";
-      details += v;
-      details += "\n";
-    }
+    if (v.empty())
+      return;
+    details += k;
+    details += ": ";
+    details += v;
+    details += "\n";
+    h.detail_rows.emplace_back(k, v);
   };
   add("Building", g_building_id);
-  if (g_form.kind_idx == 0) {
-    add("Backend", "Local");
+  if (g_bundle_session) {
+    add("Source",
+        g_bundle_name.empty() ? std::string("a .rmfmap file") : g_bundle_name);
+#ifdef __EMSCRIPTEN__
+    add("Backend", "None, the map is held in this tab");
+    add("Saving",
+        "Download map writes a new .rmfmap, the original is untouched");
+#else
+    add("Backend", g_native_bundle_path);
+    add("Saving", "Ctrl/Cmd+S or the save button repacks that file in place");
+#endif
+  } else if (g_form.kind_idx == 0) {
+    add("Backend", "Local file");
     add("Path", g_form.local_path);
+    add("Saving", g_native_bundle_path.empty()
+                      ? "writes the building.yaml in place on Ctrl/Cmd+S"
+                      : "repacks the .rmfmap bundle in place on Ctrl/Cmd+S");
   } else {
-    add("Backend", "S3");
+    add("Backend", "S3 bucket");
     add("Bucket", g_form.s3_bucket);
     add("Prefix", g_form.s3_prefix);
     add("Region", g_form.s3_region);
     add("Endpoint", g_form.s3_endpoint);
+    add("Server", g_server_url);
+    add("Saving", "autosaves through the server, edits merge across clients");
   }
   add("Branch", g_state.branch);
   if (!details.empty() && details.back() == '\n')
@@ -1858,11 +2638,26 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
   h.details = std::move(details);
 
   h.can_disconnect = !g_locked;
-  h.on_disconnect = []() {
 #ifdef __EMSCRIPTEN__
-    disconnect_and_reset();
+  h.on_disconnect = []() { disconnect_and_reset(); };
+#else
+  // Desktop picks its map in the launcher, so there is nowhere to go back to.
+  h.on_disconnect = nullptr;
 #endif
-  };
+#ifdef __EMSCRIPTEN__
+  h.on_download_map = []() { start_browser_download(); };
+#else
+  h.on_download_map = []() { request_download_map(); };
+#endif
+  h.has_server = !g_serverless_session;
+  h.dirty = g_state.dirty;
+#ifndef __EMSCRIPTEN__
+  // Only a session backed by a real file can be re-saved to it.
+  if (!g_native_bundle_path.empty() || !g_native_yaml_path.empty())
+    h.on_save_in_place = []() { native_save(); };
+  h.disconnect_label = g_serverless_session ? "Close file" : "Disconnect";
+  h.on_disconnect = []() { g_request_relaunch = true; };
+#endif
   return h;
 }
 
@@ -1899,9 +2694,12 @@ void frame() {
 #endif
 
   if (g_phase == ConnPhase::Connected) {
-    mirror_from_yjs();
-    issue_snapshot_requests();
-    issue_branch_requests();
+    // Nothing to mirror, snapshot or branch without a server.
+    if (!g_serverless_session) {
+      mirror_from_yjs();
+      issue_snapshot_requests();
+      issue_branch_requests();
+    }
 #ifndef __EMSCRIPTEN__
     if (ImGui::GetIO().KeySuper || ImGui::GetIO().KeyCtrl) {
       if (ImGui::IsKeyPressed(ImGuiKey_S, false))
@@ -1924,10 +2722,13 @@ void frame() {
     if (g_view && !shown.levels.empty()) {
       g_view->draw(shown, g_state, []() {}, build_top_bar_hooks());
     } else {
-      ImGui::Text("Waiting for initial sync...");
+      draw_busy("waiting for initial sync...");
     }
+#ifndef __EMSCRIPTEN__
+    draw_save_bundle_modal();
+#endif
     ImGui::End();
-    if (g_state.snapshot_dir.empty())
+    if (g_state.snapshot_dir.empty() && !g_serverless_session)
       push_to_yjs_if_dirty();
   }
 #ifdef __EMSCRIPTEN__
@@ -1987,6 +2788,20 @@ void shutdown_backends() {
 
 #ifndef __EMSCRIPTEN__
 
+// Nudges a window inside the work area, keeping its position otherwise.
+void keep_on_screen(GLFWwindow *win, int w, int h) {
+  int mx = 0, my = 0, mw = 0, mh = 0;
+  glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), &mx, &my, &mw, &mh);
+  if (mw <= 0 || mh <= 0)
+    return;
+  int x = 0, y = 0;
+  glfwGetWindowPos(win, &x, &y);
+  const int nx = std::max(mx, std::min(x, mx + std::max(0, mw - w)));
+  const int ny = std::max(my, std::min(y, my + std::max(0, mh - h)));
+  if (nx != x || ny != y)
+    glfwSetWindowPos(win, nx, ny);
+}
+
 void center_window(GLFWwindow *win, int w, int h) {
   int mx = 0, my = 0, mw = 0, mh = 0;
   glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), &mx, &my, &mw, &mh);
@@ -1996,6 +2811,15 @@ void center_window(GLFWwindow *win, int w, int h) {
 
 // Runs before the editor window. The window follows the modal's size.
 bool run_launcher() {
+  // No page origin to infer from on desktop. IMRMF_SERVER_URL matches how the
+  // container is configured, otherwise fall back to the documented port.
+  if (g_form.server_url[0] == '\0') {
+    const char *env = std::getenv("IMRMF_SERVER_URL");
+    set_field(g_form.server_url,
+              std::string(env && env[0] ? env : "http://localhost:30010"));
+  }
+  native_probe_server_config();
+
   const int width = 560;
   // Decorated to keep the shadow and rounded corners.
   g_window = create_window(width, 240, "Open a building", /*decorated=*/true,
@@ -2012,6 +2836,8 @@ bool run_launcher() {
 
   bool centred = false;
   int last_height = 0;
+  int unsettled = 0;
+  int tallest = 0;
   while (g_phase != ConnPhase::Connected && !glfwWindowShouldClose(g_window)) {
     begin_frame();
     // Re-opening every frame would reset the auto-fit.
@@ -2050,19 +2876,38 @@ bool run_launcher() {
     }
     end_frame();
 
-    // A fresh popup reports a placeholder size, and resizing to it sticks.
+    // A fresh popup reports a placeholder size and resizing to it sticks, so
+    // wait for two frames to agree. If they never do (height depends on the
+    // width given), take the tallest seen rather than leaving it clipped.
     int current_w = 0, current_h = 0;
     glfwGetWindowSize(g_window, &current_w, &current_h);
     const int height = (int)(wanted_height + 0.5f);
-    if (height > 1 && height == last_height && height != current_h) {
-      glfwSetWindowSize(g_window, width, height);
+    auto fit = [&](int h) {
+      glfwSetWindowSize(g_window, width, h);
       // Only the first fit centres, later ones may have been dragged.
       if (!centred) {
-        center_window(g_window, width, height);
+        center_window(g_window, width, h);
         centred = true;
       }
+      unsettled = 0;
+      tallest = 0;
+    };
+    if (height > 1 && height != current_h) {
+      tallest = std::max(tallest, height);
+      if (height == last_height)
+        fit(height);
+      else if (++unsettled > 30)
+        fit(tallest);
+    } else {
+      unsettled = 0;
+      tallest = 0;
     }
     last_height = height;
+
+    // Height and work area both move under us (content appears, a remote
+    // desktop resizes when clients attach), so re-check every frame. No
+    // re-centring, a window the user dragged stays put.
+    keep_on_screen(g_window, width, current_h);
   }
 
   ImGui::GetStyle().DisplaySafeAreaPadding = safe_area;
@@ -2075,6 +2920,109 @@ bool run_launcher() {
 #endif // __EMSCRIPTEN__
 
 } // namespace
+
+#ifdef __EMSCRIPTEN__
+// Kept out of the anonymous namespace so the exported names survive linking.
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE void
+imrmf_bundle_add_asset(const char *path, const unsigned char *data, int len) {
+  if (!path || !data || len <= 0)
+    return;
+  g_bundle_staging[path].assign(data, data + len);
+}
+
+// Returns the packed size, 0 on failure.
+EMSCRIPTEN_KEEPALIVE int imrmf_bundle_build() {
+  try {
+    MapBundle bundle = pack_current_bundle(
+        [](const std::string &p, std::vector<unsigned char> *out) {
+          auto it = g_bundle_staging.find(p);
+          if (it == g_bundle_staging.end())
+            return false;
+          *out = it->second;
+          return true;
+        });
+    g_bundle_bytes = imrmf::map_editor::write_bundle(bundle);
+    g_state.status_message = bundle.missing.empty()
+                                 ? "downloaded " + g_bundle_filename
+                                 : "downloaded " + g_bundle_filename + " — " +
+                                       std::to_string(bundle.missing.size()) +
+                                       " image(s) missing";
+  } catch (const std::exception &e) {
+    g_bundle_error = e.what();
+    g_state.status_message = std::string("pack failed: ") + e.what();
+    g_bundle_bytes.clear();
+    return 0;
+  }
+  return (int)g_bundle_bytes.size();
+}
+
+EMSCRIPTEN_KEEPALIVE const unsigned char *imrmf_bundle_data() {
+  return g_bundle_bytes.data();
+}
+
+EMSCRIPTEN_KEEPALIVE void imrmf_bundle_release() {
+  g_bundle_staging.clear();
+  g_bundle_bytes.clear();
+  g_bundle_bytes.shrink_to_fit();
+}
+
+// No mount and no CRDT. Download is the only way to save.
+EMSCRIPTEN_KEEPALIVE int imrmf_bundle_open(const unsigned char *data, int len,
+                                           const char *name) {
+  if (!data || len <= 0) {
+    g_error_message = "empty file";
+    return 0;
+  }
+  MapBundle bundle;
+  try {
+    bundle = imrmf::map_editor::read_bundle(data, (std::size_t)len);
+  } catch (const std::exception &e) {
+    g_error_message = std::string("not a usable map bundle: ") + e.what();
+    return 0;
+  }
+
+  auto blobs = std::make_shared<mecanvas::AssetBlobs>();
+  for (auto &a : bundle.assets)
+    (*blobs)[a.path] = std::move(a.bytes);
+
+  g_building = std::move(bundle.building);
+  g_bundle_blobs = std::move(blobs);
+  g_building_id =
+      std::string(bundle.yaml_name, 0, bundle.yaml_name.find(".building.yaml"));
+  if (g_building_id.empty())
+    g_building_id = "map";
+  g_serverless_session = true;
+  g_bundle_session = true;
+  g_bundle_name = name ? name : "";
+  g_state = {};
+
+  // Object URLs so the images render through the worker and a big map does not
+  // lock the tab.
+  imrmf_js_clear_bundle_assets();
+  for (const auto &[path, bytes] : *g_bundle_blobs) {
+    if (!bytes.empty())
+      imrmf_js_register_bundle_asset(path.c_str(), bytes.data(),
+                                     (int)bytes.size());
+  }
+  auto provider = std::make_unique<mecanvas::HttpTextureProvider>(
+      [](const std::string &, const std::string &path) {
+        return take_string(imrmf_js_bundle_asset_url(path.c_str()));
+      });
+  g_view = std::make_unique<EditorView>(std::move(provider), g_building_id);
+
+  g_error_message.clear();
+  if (!bundle.missing.empty()) {
+    g_state.status_message = std::to_string(bundle.missing.size()) +
+                             " image(s) missing from the bundle";
+  }
+  g_phase = ConnPhase::Connected;
+  return 1;
+}
+
+} // extern "C"
+#endif // __EMSCRIPTEN__
 
 int main(int argc, char **argv) {
   if (!glfwInit()) {
@@ -2128,7 +3076,7 @@ int main(int argc, char **argv) {
                      "ui/fonts/materialdesignicons-webfont.ttf"});
 
 #ifdef __EMSCRIPTEN__
-  g_window = create_window(1600, 900, "ImRmfMapEditor", true);
+  g_window = create_window(1600, 900, "RMF Map Editor", true);
   if (!g_window) {
     glfwTerminate();
     return 1;
@@ -2139,23 +3087,28 @@ int main(int argc, char **argv) {
   start_boot_config();
   emscripten_set_main_loop(frame, 0, 1);
 #else
-  // Pick the building first. The editor window opens only once that succeeds.
-  if (!run_launcher()) {
-    ImGui::DestroyContext();
-    glfwTerminate();
-    return 0;
-  }
+  // Closing a map comes back to the launcher rather than quitting.
+  for (;;) {
+    if (!run_launcher())
+      break;
 
-  g_window = create_window(1600, 900, "ImRmfMapEditor", true);
-  if (!g_window) {
-    glfwTerminate();
-    return 1;
+    g_window = create_window(1600, 900, "RMF Map Editor", true);
+    if (!g_window) {
+      glfwTerminate();
+      return 1;
+    }
+    init_backends(g_window);
+    g_request_relaunch = false;
+    while (!glfwWindowShouldClose(g_window) && !g_request_relaunch)
+      frame();
+    const bool relaunch = g_request_relaunch;
+    shutdown_backends();
+    glfwDestroyWindow(g_window);
+    g_window = nullptr;
+    if (!relaunch)
+      break;
+    reset_for_relaunch();
   }
-  init_backends(g_window);
-  while (!glfwWindowShouldClose(g_window))
-    frame();
-  shutdown_backends();
-  glfwDestroyWindow(g_window);
 #endif
 
   ImGui::DestroyContext();

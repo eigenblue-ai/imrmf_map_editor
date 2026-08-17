@@ -164,6 +164,8 @@ async fn config_handler(State(rs): State<RouteState>) -> Response {
         "auto_building": rs.auto_building.as_ref().clone(),
         "backend": rs.backend_kind,
         "branch": branch,
+        // Lets the connect form show what the server was started with.
+        "mount": rs.app.mount_config_public().await,
     });
     (StatusCode::OK, axum::Json(body)).into_response()
 }

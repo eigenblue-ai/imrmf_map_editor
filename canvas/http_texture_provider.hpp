@@ -23,6 +23,11 @@ public:
 
   void set_url_builder(UrlBuilder b) { url_builder_ = std::move(b); }
 
+  // Prefixed to what the url builder returns. A desktop client has no page
+  // origin to resolve against, so it must name the server. Empty keeps the
+  // browser behaviour.
+  void set_base_url(std::string base);
+
 protected:
   void trigger_load(LayerTexture &out, const std::string &cache_key,
                     const std::string &asset_id, const std::string &asset_path,
@@ -30,6 +35,7 @@ protected:
 
 private:
   UrlBuilder url_builder_;
+  std::string base_url_;
 };
 
 } // namespace imrmf::map_editor::canvas

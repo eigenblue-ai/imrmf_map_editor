@@ -3,15 +3,43 @@ Copyright (c) 2026 The ImRmfMapEditor Authors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
-This product includes software developed by third parties. Their licenses
-and attributions are listed in THIRD_PARTY_LICENSES.md.
+This product includes software developed by third parties. The components,
+their licenses, and the required copyright notices are listed in
+THIRD_PARTY_LICENSES.md.
 
 This product is compatible with, but is not affiliated with or endorsed by,
 the Open Source Robotics Foundation or the Open-RMF project. The
 `building.yaml` schema and the `[type_code, value]` parameter wire format
 are documented by the upstream open-rmf/rmf_traffic_editor project.
 
-Files under third_party/ are derived from upstream open-rmf/rmf_traffic_editor
-(commit cd6bf2b49f0f6c8fd9decbfe07a8e97be27533f9). Modifications applied at
-build time are recorded in third_party/patches/ and the patched files carry
-an in-file modification notice.
+The build fetches rmf_building_map_tools from open-rmf/rmf_traffic_editor
+(commit cd6bf2b49f0f6c8fd9decbfe07a8e97be27533f9), Apache License 2.0, and
+patches it. The changes are recorded in third_party/patches/ and each patched
+file carries an in-file modification notice, as Section 4(b) of the license
+requires. The patched sources ship in the server container image.
+
+third_party/miniz/ is an unmodified copy of miniz 3.1.2, MIT licensed. It is
+used to read and write the .imrmf map bundle. Its license text is
+third_party/miniz/LICENSE.miniz.
+
+canvas/stb_image.h, ui/stb_image.h, and ui/stb_image_write.h are unmodified
+copies of stb_image 2.30 and stb_image_write 1.16 by Sean Barrett. Both are
+offered under MIT or a public domain dedication and are used here under MIT.
+
+ui/fonts/Inter.ttf is the Inter typeface, Copyright 2020 The Inter Project
+Authors, under the SIL Open Font License 1.1. The license travels with it as
+ui/fonts/OFL.txt.
+
+ui/fonts/materialdesignicons-webfont.ttf is the Material Design Icons webfont
+from the Pictogrammers project, under the Apache License 2.0. Its terms are in
+ui/fonts/MDI-LICENSE.
+
+The server container image contains Eclipse Cyclone DDS 0.10.5, statically
+linked into librmw_cyclonedds.so. Cyclone DDS is available under the Eclipse
+Public License 2.0 or the Eclipse Distribution License 1.0, and is used here
+under the Eclipse Distribution License 1.0. It is unmodified. Eclipse Cyclone
+DDS is a trademark of the Eclipse Foundation.
+
+The server container image also contains ROS 2 Jazzy client libraries and
+message packages (Apache License 2.0, except unique_identifier_msgs which is
+BSD 3-Clause), CPython 3.12, NumPy, PyYAML, and lark-parser.

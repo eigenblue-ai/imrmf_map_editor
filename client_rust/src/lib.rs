@@ -5,6 +5,7 @@
 //! Local and S3 are mount configs the server owns, so this only does mount,
 //! load, and sync.
 
+use std::cell::RefCell;
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,7 +16,15 @@ use imrmf_core::{sync, yaml_bridge};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
-use yrs::{Doc, ReadTxn, Transact};
+use yrs::undo::{Options as UndoOptions, UndoManager};
+use yrs::{Doc, Origin, ReadTxn, Transact};
+
+// Tags transactions this client makes, so undo only rewinds our own edits.
+const LOCAL_ORIGIN: &[u8] = b"imrmf-local";
+
+thread_local! {
+    static UNDO: RefCell<Option<UndoManager<()>>> = const { RefCell::new(None) };
+}
 
 struct Session {
     doc: Arc<Mutex<Doc>>,
@@ -72,6 +81,50 @@ fn post_json(url: &str, body: serde_json::Value) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .into_string()
         .map_err(|e| e.to_string())
+}
+
+fn get_text(url: &str) -> Result<String, String> {
+    ureq::get(url)
+        .timeout(Duration::from_secs(30))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())
+}
+
+/// GET /config, handed back verbatim. Credentials are never in it, only whether
+/// the server holds any.
+#[no_mangle]
+pub extern "C" fn imrmf_client_fetch_config(server_url: *const c_char) -> *mut c_char {
+    let base = from_c_str(server_url);
+    match get_text(&format!("{}/config", base.trim_end_matches('/'))) {
+        Ok(body) => ok(body),
+        Err(e) => err(e),
+    }
+}
+
+/// GET /buildings for a server that already has a backend mounted, so a locked
+/// or auto-mounted server can be joined without POSTing a mount.
+#[no_mangle]
+pub extern "C" fn imrmf_client_list_buildings(server_url: *const c_char) -> *mut c_char {
+    let base = from_c_str(server_url);
+    match get_text(&format!("{}/buildings", base.trim_end_matches('/'))) {
+        Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(v) => {
+                let ids: Vec<String> = v["buildings"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ok(ids.join("\n"))
+            }
+            Err(e) => err(format!("buildings response: {e}")),
+        },
+        Err(e) => err(e),
+    }
 }
 
 /// Mounts a backend. `config_json` is the server's MountConfig.
@@ -222,6 +275,18 @@ pub extern "C" fn imrmf_client_connect(ws_url: *const c_char) -> *mut c_char {
         task_synced.store(false, Ordering::SeqCst);
     });
 
+    // Scoped to our own origin, so undo leaves peers' edits alone. UndoManager
+    // is neither Send nor Sync, so it lives in a thread local rather than the
+    // shared Session. Every FFI call comes from the one UI thread.
+    {
+        let d = doc.lock().unwrap();
+        let root = d.get_or_insert_map(yaml_bridge::ROOT_KEY);
+        let mut opts = UndoOptions::default();
+        opts.tracked_origins.insert(Origin::from(LOCAL_ORIGIN));
+        let mgr = UndoManager::<()>::with_scope_and_options(&d, &root, opts);
+        UNDO.with(|u| *u.borrow_mut() = Some(mgr));
+    }
+
     *session().lock().unwrap() = Some(Arc::new(Session {
         doc,
         outbox: tx,
@@ -231,12 +296,63 @@ pub extern "C" fn imrmf_client_connect(ws_url: *const c_char) -> *mut c_char {
     ok("")
 }
 
+/// Undo/redo over the local edit stack. The change is broadcast like any other
+/// edit, and remote_dirty is raised so the UI re-reads the doc.
+fn undo_step(redo: bool) -> bool {
+    let guard = session().lock().unwrap();
+    let Some(s) = guard.as_ref() else {
+        return false;
+    };
+    let doc = s.doc.lock().unwrap();
+    let before = doc.transact().state_vector();
+    let changed = UNDO.with(|u| match u.borrow_mut().as_mut() {
+        Some(mgr) => {
+            if redo {
+                mgr.redo_blocking()
+            } else {
+                mgr.undo_blocking()
+            }
+        }
+        None => false,
+    });
+    if !changed {
+        return false;
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    if !update.is_empty() {
+        let _ = s.outbox.send(sync::encode_update_message(&update));
+    }
+    s.remote_dirty.store(true, Ordering::SeqCst);
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn imrmf_client_undo() -> c_int {
+    undo_step(false) as c_int
+}
+
+#[no_mangle]
+pub extern "C" fn imrmf_client_redo() -> c_int {
+    undo_step(true) as c_int
+}
+
+#[no_mangle]
+pub extern "C" fn imrmf_client_can_undo() -> c_int {
+    UNDO.with(|u| u.borrow().as_ref().map(|m| m.can_undo()).unwrap_or(false)) as c_int
+}
+
+#[no_mangle]
+pub extern "C" fn imrmf_client_can_redo() -> c_int {
+    UNDO.with(|u| u.borrow().as_ref().map(|m| m.can_redo()).unwrap_or(false)) as c_int
+}
+
 fn tracing_log(msg: String) {
     eprintln!("[imrmf client] {msg}");
 }
 
 #[no_mangle]
 pub extern "C" fn imrmf_client_disconnect() {
+    UNDO.with(|u| *u.borrow_mut() = None);
     *session().lock().unwrap() = None;
 }
 
@@ -292,7 +408,7 @@ pub extern "C" fn imrmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
 
     // Diff against the pre-edit state vector, so only this edit goes out.
     let before = doc.transact().state_vector();
-    if let Err(e) = yaml_bridge::seed_doc(&doc, &yaml) {
+    if let Err(e) = yaml_bridge::seed_doc_with_origin(&doc, &yaml, LOCAL_ORIGIN) {
         return err(e);
     }
     let update = doc.transact().encode_state_as_update_v1(&before);

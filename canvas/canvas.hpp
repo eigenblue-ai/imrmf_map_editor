@@ -32,6 +32,10 @@ struct LayerTexture {
   double last_color_r = -1.0, last_color_g = -1.0, last_color_b = -1.0;
 };
 
+std::string floorplan_cache_key(const std::string &level_name);
+std::string layer_cache_key(const std::string &level_name,
+                            const std::string &layer_name);
+
 class TextureProvider {
 public:
   virtual ~TextureProvider();
@@ -40,6 +44,17 @@ public:
                         const std::string &asset_id,
                         const std::string &asset_path, double tint_r,
                         double tint_g, double tint_b);
+
+  // NotStarted means the renderer has not asked for it yet, e.g. a hidden
+  // layer.
+  LoadStatus status_of(const std::string &cache_key) const;
+
+  // Raw encoded bytes, when the provider can get them synchronously. Only the
+  // local one can, the HTTP one returns false and callers fetch instead.
+  virtual bool read_asset(const std::string & /*asset_path*/,
+                          std::vector<unsigned char> * /*out*/) const {
+    return false;
+  }
 
   void clear_cache() { textures_.clear(); }
 
@@ -106,6 +121,7 @@ public:
   ImVec2 canvas_size() const { return canvas_size_; }
   ImDrawList *draw_list() const { return draw_list_; }
   const std::string &asset_id() const { return asset_id_; }
+  TextureProvider *provider() const { return provider_; }
 
 private:
   ImVec2 canvas_pos_{}, canvas_size_{}, canvas_center_{};

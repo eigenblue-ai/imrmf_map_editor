@@ -13,6 +13,8 @@ extern "C" {
 void imrmf_client_string_free(char *s);
 
 // Takes the server's MountConfig, returns building ids one per line.
+char *imrmf_client_fetch_config(const char *server_url);
+char *imrmf_client_list_buildings(const char *server_url);
 char *imrmf_client_mount(const char *server_url, const char *config_json);
 char *imrmf_client_load_building(const char *server_url, const char *id);
 char *imrmf_client_put_building(const char *server_url, const char *id,
@@ -22,6 +24,12 @@ char *imrmf_client_connect(const char *ws_url);
 void imrmf_client_disconnect(void);
 int imrmf_client_is_connected(void);
 int imrmf_client_is_synced(void);
+
+// Undo/redo over this client's own edits. Return 1 if anything changed.
+int imrmf_client_undo(void);
+int imrmf_client_redo(void);
+int imrmf_client_can_undo(void);
+int imrmf_client_can_redo(void);
 
 int imrmf_client_remote_dirty(void);
 void imrmf_client_clear_remote_dirty(void);

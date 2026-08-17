@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace imrmf::map_editor {
@@ -157,15 +158,33 @@ struct EditorState {
 
 struct TopBarHooks {
   std::string connection_label;
-  std::string details; // multi-line connection info for the tooltip + modal
+  std::string details; // multi-line connection info, for the hover tooltip
+  // The same info as label/value pairs, so the modal can lay it out as a form.
+  std::vector<std::pair<std::string, std::string>> detail_rows;
   bool can_disconnect = false;
+  // Unset hides the button, there being nothing to disconnect from.
   std::function<void()> on_disconnect;
+  // Save yaml plus every image as one .rmfmap. Unset hides the button.
+  std::function<void()> on_download_map;
+  // False for a local yaml or bundle, which hides everything needing a server.
+  bool has_server = true;
+  // Native only: rewrite the file this map was opened from. Unset hides it.
+  std::function<void()> on_save_in_place;
+  bool dirty = false;
+  // A server session disconnects, a file session closes.
+  std::string disconnect_label = "Disconnect";
 };
 
 class EditorView {
 public:
-  EditorView(std::string image_root_unused, std::string building_id);
+  // HttpTextureProvider for a server, StbTextureProvider for disk or a bundle.
+  EditorView(std::unique_ptr<canvas::TextureProvider> provider,
+             std::string building_id);
   ~EditorView();
+
+  canvas::TextureProvider *texture_provider() {
+    return texture_provider_.get();
+  }
 
   void draw(Building &building, EditorState &state,
             const std::function<void()> &save_callback,
@@ -177,7 +196,9 @@ public:
 
 private:
   std::string building_id_;
-  std::unique_ptr<canvas::HttpTextureProvider> texture_provider_;
+  std::unique_ptr<canvas::TextureProvider> texture_provider_;
+  // Non-null only for the HTTP provider. Snapshot routes mean nothing locally.
+  canvas::HttpTextureProvider *http_provider_ = nullptr;
   canvas::MapCanvas canvas_;
 
   bool marquee_active_ = false;
@@ -203,7 +224,7 @@ private:
   void draw_align_floors_canvas(Building &building, EditorState &state);
   void handle_floor_align_input(Building &building, EditorState &state,
                                 bool hovered);
-  void draw_version_strip(EditorState &state);
+  void draw_version_strip(EditorState &state, const TopBarHooks &top_bar);
 };
 
 } // namespace imrmf::map_editor

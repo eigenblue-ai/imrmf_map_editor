@@ -4,7 +4,11 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 package(default_visibility = ["//visibility:public"])
 
 _APP_DEPS = [
+    "//canvas:http_texture_provider",
+    "//canvas:stb_texture_provider",
     "//model",
+    "//model:asset_paths",
+    "//model:map_bundle",
     "//ui:core",
     "//ui:icons",
     "//view",
@@ -94,7 +98,7 @@ cc_binary(
             "--preload-file=$(location //ui:font_ttf)@Inter.ttf",
             "--preload-file=$(location //ui:font_mdi)@materialdesignicons-webfont.ttf",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
-            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded",
+            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded,_imrmf_bundle_add_asset,_imrmf_bundle_build,_imrmf_bundle_data,_imrmf_bundle_release,_imrmf_bundle_open",
         ],
         "//conditions:default": [],
     }),
@@ -115,6 +119,7 @@ cc_binary(
     name = "editor",
     srcs = ["main.cpp"],
     data = [
+        "//ui:font_licenses",
         "//ui:font_mdi",
         "//ui:font_ttf",
     ],

@@ -11,6 +11,10 @@ app for the browser, and a desktop app for macOS and Linux.
   the sync protocol.
 - Local filesystem and S3 storage backends. Optional auto-mount + auto-load
   at startup.
+- `.rmfmap` map bundles: the `building.yaml` and every image it references in
+  one movable file, downloadable from the toolbar under the map.
+- Image paths resolve relative to the `building.yaml`, and the Layers panel
+  flags a layer whose file is missing or whose path won't survive a move.
 - Real-time multi-user collaboration via CRDT. Concurrent edits merge.
 - Autosync with server-side validation; revert to last valid on bad edits.
 - Browser-based, no install. Canvas embeds read-only into other apps.
@@ -41,7 +45,8 @@ app for the browser, and a desktop app for macOS and Linux.
 ## Layout
 
 ```
-model/        building.yaml parse/serialize. No UI / fetch deps.
+model/        building.yaml parse/serialize, asset paths, .rmfmap bundles.
+              No UI / fetch deps.
 canvas/       Map renderer (native + wasm). Embeddable read-only.
 ui/           Shared ImGui theme, widgets, fonts, icons.
 view/         EditorView: modes, selection, Yjs op wiring.
@@ -50,7 +55,7 @@ client_rust/  Desktop CRDT client: y-sync over WebSocket + REST, as a C ABI.
 server_rust/  axum/yrs WebSocket server: CRDT + REST. :core is shared with the
               desktop client.
 server/       Shared buildings_api.
-third_party/  Patched rmf_building_map_tools.
+third_party/  Patched rmf_building_map_tools, vendored miniz.
 ```
 
 The browser gets fetch, the WebSocket, and the Yjs provider from JS. The desktop
@@ -82,13 +87,21 @@ bazel run //app:editor
 Opens a dialog first, then the editor window once a building is chosen. The
 dialog is the same one the browser shows, with the same two backends:
 
-- **Local file** reads and writes the `building.yaml` directly, with no server
-  and no CRDT. `Ctrl/Cmd+S` writes it back. macOS uses the system open/save
+- **Local file** reads and writes the map directly, with no server and no CRDT.
+  `Ctrl/Cmd+S` writes it back. The Format control picks between a plain
+  `building.yaml` and a `.rmfmap` bundle. macOS uses the system open/save
   panels, elsewhere the dialog browses the filesystem itself.
 - **S3 Bucket** mounts through a running server and then syncs over Yjs, so
   desktop and browser clients edit the same building together.
 
 Snapshots and branches are browser-only for now.
+
+On Linux the build needs the X11 and GL development headers, which GLFW's X11
+backend and the `-lX11` / `-lGL` link flags pick up from the system:
+
+```bash
+sudo apt-get install -y libgl1-mesa-dev mesa-common-dev xorg-dev
+```
 
 Check the client against a running server without the UI:
 
@@ -102,6 +115,42 @@ macOS needs the Apple CC toolchain for glfw's objc backend, which `.bazelrc`
 selects under `build:macos`. The desktop app hides the system title bar there
 and draws its own, keeping the window's shadow and its close/minimise/zoom
 buttons. Linux keeps the system title bar and uses the in-app file browser.
+
+## Remounting a running server
+
+`IMRMF_AUTO_MOUNT_KIND` also locks the mount: `POST /mount` and `/unmount`
+return 409. `IMRMF_ALLOW_REMOUNT=1` keeps them open so a client can point the
+server somewhere else.
+
+The server has no authentication and its CORS policy allows any origin, so turn
+this on only on a trusted network. With it on, anything that can reach the
+server can change which backend everyone is editing, and remounting resets the
+shared document for every connected client.
+
+Credentials are never sent to a client. `GET /config` reports only whether the
+server holds them, and a mount request with blank credentials reuses the ones
+already in place, but only when it targets the same endpoint and region.
+Changing either means supplying your own, so a caller cannot aim the server's
+keys at a host of their choosing.
+
+## Map bundles (`.rmfmap`)
+
+A `.rmfmap` file is a plain zip holding a whole map:
+
+```
+manifest.json         format, version, yaml name, and a path -> entry table
+<id>.building.yaml    byte-identical to what the editor writes normally
+assets/...            one entry per referenced image
+```
+
+`Download map` in the strip under the canvas writes one. Desktop saves it to a
+path you pick, the browser downloads it. Opening one keeps it in memory: the
+images are never unpacked to disk, and saving repacks the file in place.
+
+Image paths inside the yaml are relative to the yaml's own directory. Opening a
+`building.yaml` rewrites any absolute path that points inside that directory
+into the relative form, so the map stays movable. A path that points outside is
+left alone and flagged in the Layers panel, as is one whose file is missing.
 
 ## Docker
 

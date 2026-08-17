@@ -10,8 +10,13 @@
 #include "ui/icons.hpp"
 #include "ui/widgets.hpp"
 
+#include "model/asset_paths.hpp"
 #include "model/yaml_io.hpp"
 #include "view/canvas_controls.hpp"
+
+#ifndef __EMSCRIPTEN__
+#include "client_rust/client.h"
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -280,9 +285,20 @@ static inline const char *mev_asset_up_code() { return "idle"; }
 static inline const char *mev_asset_up_name() { return ""; }
 #endif
 
+#ifdef __EMSCRIPTEN__
+inline void note_local_edit() {} // the browser sends an op per edit
+#else
+// The desktop has no per-op bridge. It pushes the whole document when the
+// editor reports itself dirty, and without this flag no edit ever reaches the
+// CRDT, so nothing syncs and undo has nothing to track.
+bool g_local_edit = false;
+inline void note_local_edit() { g_local_edit = true; }
+#endif
+
 void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_add(level.c_str(), y.c_str());
@@ -294,6 +310,7 @@ void yjs_op_vertex_add(const std::string &level, const Vertex &v) {
 void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_vertex(v);
   mevjs_vertex_replace(level.c_str(), idx, y.c_str());
@@ -306,6 +323,7 @@ void yjs_op_vertex_replace(const std::string &level, int idx, const Vertex &v) {
 void yjs_op_vertex_delete(const std::string &level, int idx) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_vertex_delete(level.c_str(), idx);
 #else
@@ -316,6 +334,7 @@ void yjs_op_vertex_delete(const std::string &level, int idx) {
 void yjs_op_lane_add(const std::string &level, const Lane &l) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_add(level.c_str(), y.c_str());
@@ -327,6 +346,7 @@ void yjs_op_lane_add(const std::string &level, const Lane &l) {
 void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_lane(l);
   mevjs_lane_replace(level.c_str(), idx, y.c_str());
@@ -339,6 +359,7 @@ void yjs_op_lane_replace(const std::string &level, int idx, const Lane &l) {
 void yjs_op_lane_delete(const std::string &level, int idx) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_lane_delete(level.c_str(), idx);
 #else
@@ -387,6 +408,7 @@ IMRMF_GEOM_OPS(Floor, floor)
 void yjs_op_layer_set(const std::string &level, const Layer &L) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_layer(L);
   mevjs_layer_set(level.c_str(), L.name.c_str(), y.c_str());
@@ -398,6 +420,7 @@ void yjs_op_layer_set(const std::string &level, const Layer &L) {
 void yjs_op_layer_delete(const std::string &level, const std::string &name) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_layer_delete(level.c_str(), name.c_str());
 #else
@@ -408,6 +431,7 @@ void yjs_op_layer_delete(const std::string &level, const std::string &name) {
 void yjs_op_fiducial_add(const std::string &level, const Fiducial &f) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_add(level.c_str(), y.c_str());
@@ -420,6 +444,7 @@ void yjs_op_fiducial_replace(const std::string &level, int idx,
                              const Fiducial &f) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   std::string y = serialize_fiducial(f);
   mevjs_fiducial_replace(level.c_str(), idx, y.c_str());
@@ -432,6 +457,7 @@ void yjs_op_fiducial_replace(const std::string &level, int idx,
 void yjs_op_fiducial_delete(const std::string &level, int idx) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_fiducial_delete(level.c_str(), idx);
 #else
@@ -442,6 +468,7 @@ void yjs_op_fiducial_delete(const std::string &level, int idx) {
 void yjs_op_set_reference_level(const std::string &name) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_set_reference_level(name.c_str());
 #else
@@ -452,6 +479,7 @@ void yjs_op_set_reference_level(const std::string &name) {
 void yjs_op_drawing_set(const std::string &level, const std::string &filename) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   mevjs_drawing_set(level.c_str(), filename.c_str());
 #else
@@ -464,6 +492,7 @@ void yjs_op_layer_reorder(const std::string &level,
                           const std::vector<std::string> &names) {
   if (g_readonly)
     return;
+  note_local_edit();
 #ifdef __EMSCRIPTEN__
   // Emit a JSON array of layer names — JSON.parse on the JS side.
   std::string buf = "[";
@@ -1121,15 +1150,20 @@ EM_JS(const char *, mev_asset_up_name, (), {
 
 } // namespace
 
-EditorView::EditorView(std::string /*image_root_unused*/,
+EditorView::EditorView(std::unique_ptr<canvas::TextureProvider> provider,
                        std::string building_id)
     : building_id_(std::move(building_id)),
-      texture_provider_(std::make_unique<canvas::HttpTextureProvider>()),
+      texture_provider_(std::move(provider)),
+      http_provider_(
+          dynamic_cast<canvas::HttpTextureProvider *>(texture_provider_.get())),
       canvas_(building_id_, texture_provider_.get()) {}
 
 EditorView::~EditorView() = default;
 
 void EditorView::apply_snapshot_dir(const std::string &dir) {
+  // Snapshots are a server concept, a local map has no route to rewrite.
+  if (!http_provider_)
+    return;
   auto enc = [](const std::string &s) {
     std::string o;
     o.reserve(s.size() * 3);
@@ -1148,13 +1182,13 @@ void EditorView::apply_snapshot_dir(const std::string &dir) {
     return o;
   };
   if (dir.empty()) {
-    texture_provider_->set_url_builder(
+    http_provider_->set_url_builder(
         [enc](const std::string &id, const std::string &path) {
           return "/layer_asset?id=" + enc(id) + "&path=" + enc(path);
         });
   } else {
     std::string d = dir;
-    texture_provider_->set_url_builder(
+    http_provider_->set_url_builder(
         [enc, d](const std::string &id, const std::string &path) {
           return "/snapshot_asset?id=" + enc(id) + "&dir=" + enc(d) +
                  "&path=" + enc(path);
@@ -1172,6 +1206,14 @@ void EditorView::draw(Building &building, EditorState &state,
   }
   state.level_idx =
       std::max(0, std::min(state.level_idx, (int)building.levels.size() - 1));
+
+#ifndef __EMSCRIPTEN__
+  // Edits from the previous frame's ops, which the app pushes on.
+  if (g_local_edit) {
+    g_local_edit = false;
+    state.dirty = true;
+  }
+#endif
 
   // Flush pending edits against the old level before switching.
   if (state.last_drawn_level_idx >= 0 &&
@@ -1201,7 +1243,7 @@ void EditorView::draw(Building &building, EditorState &state,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     draw_canvas(building, state);
     ImGui::EndChild();
-    draw_version_strip(state);
+    draw_version_strip(state, top_bar);
   }
   ImGui::EndChild();
 
@@ -1309,22 +1351,48 @@ void EditorView::draw(Building &building, EditorState &state,
       ImGui::IsKeyPressed(ImGuiKey_S)) {
     save_callback();
   }
+  // CRDT-backed undo / redo. A 500ms capture timeout batches contiguous small
+  // pushes (a single drag) into one step, in JS and in the desktop client.
+  {
+    // After an undo the document already holds the wanted state. Pushing our
+    // pre-undo copy back would land as a fresh edit and wipe the redo stack.
+    auto settle = [&state]() {
+#ifndef __EMSCRIPTEN__
+      g_local_edit = false;
+      state.dirty = false;
+#else
+      (void)state;
+#endif
+    };
+    auto do_undo = [&settle]() {
 #ifdef __EMSCRIPTEN__
-  // Yjs-backed undo / redo. Captured-timeout (500ms in JS) batches contiguous
-  // small pushes (e.g. a single drag) into one undo step.
-  if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
-      !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-    if (ImGui::GetIO().KeyShift) {
-      map_editor_yjs_redo();
-    } else {
       map_editor_yjs_undo();
+#else
+      imrmf_client_undo();
+#endif
+      settle();
+    };
+    auto do_redo = [&settle]() {
+#ifdef __EMSCRIPTEN__
+      map_editor_yjs_redo();
+#else
+      imrmf_client_redo();
+#endif
+      settle();
+    };
+    const bool mod = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper;
+    if (mod && !ImGui::GetIO().WantTextInput &&
+        ImGui::IsKeyPressed(ImGuiKey_Z)) {
+      if (ImGui::GetIO().KeyShift)
+        do_redo();
+      else
+        do_undo();
+    }
+    if (mod && !ImGui::GetIO().WantTextInput &&
+        ImGui::IsKeyPressed(ImGuiKey_Y)) {
+      do_redo();
     }
   }
-  if ((ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper) &&
-      !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Y)) {
-    map_editor_yjs_redo();
-  }
-#endif
 
   // Idle-commit if the pending edit has been quiet long enough.
   if (state.pending_commit_time > 0.0 &&
@@ -1381,36 +1449,87 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     if (ImGui::IsItemClicked())
       ImGui::OpenPopup("Connection##conn_info");
     ImGui::SameLine();
-  }
-  if (ImGuiWidgets::BeginModal("Connection##conn_info", 360.0f)) {
-    ImGui::TextWrapped("%s", top_bar.details.empty()
-                                 ? top_bar.connection_label.c_str()
-                                 : top_bar.details.c_str());
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
-    const bool dc = top_bar.can_disconnect && (bool)top_bar.on_disconnect;
-    const float bw = 120.0f;
-    const float sp = ImGui::GetStyle().ItemSpacing.x;
-    const float total = bw + (dc ? bw + sp : 0.0f);
-    const float avail = ImGui::GetContentRegionAvail().x;
-    if (avail > total)
-      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - total));
-    if (dc) {
-      ImGui::PushStyleColor(ImGuiCol_Button,
-                            theme::with_alpha(theme::palette::danger, 0.75f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
-      if (ImGui::Button("Disconnect", ImVec2(bw, 0))) {
-        top_bar.on_disconnect();
-        ImGui::CloseCurrentPopup();
+    if (top_bar.on_save_in_place) {
+      if (top_bar.dirty)
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::palette::warning);
+      if (ImGui::SmallButton(ICON_MDI_CONTENT_SAVE))
+        top_bar.on_save_in_place();
+      if (top_bar.dirty)
+        ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(top_bar.dirty ? "Save to the same file (Ctrl+S) "
+                                          "\xE2\x80\x94 unsaved changes"
+                                        : "Save to the same file (Ctrl+S)");
       }
-      ImGui::PopStyleColor(2);
       ImGui::SameLine();
     }
-    if (ImGui::Button("Close", ImVec2(bw, 0)))
+  }
+  if (ImGuiWidgets::BeginModal("Connection##conn_info", 420.0f)) {
+    ImGui::TextWrapped("Where this map is loaded from, and where your edits "
+                       "are written back to.");
+    ImGuiWidgets::SectionGap();
+
+    if (!top_bar.detail_rows.empty()) {
+      if (ImGuiWidgets::BeginFormTable("##conn_detail")) {
+        for (const auto &[label, value] : top_bar.detail_rows) {
+          ImGuiWidgets::FormRow(label.c_str());
+          ImGui::TextWrapped("%s", value.c_str());
+        }
+        ImGui::EndTable();
+      }
+    } else {
+      ImGui::TextWrapped("%s", top_bar.details.empty()
+                                   ? top_bar.connection_label.c_str()
+                                   : top_bar.details.c_str());
+    }
+
+    // Offered even in locked mode, since getting back out is the point.
+    const bool dc = (bool)top_bar.on_disconnect;
+    if (dc) {
+      ImGuiWidgets::SectionGap();
+      // TextDisabled does not wrap, so dim the colour and use TextWrapped.
+      ImGui::PushStyleColor(ImGuiCol_Text,
+                            ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+      ImGui::TextWrapped(
+          "%s closes this map and returns to the chooser, where you can open a "
+          "local file or mount an S3 bucket.",
+          top_bar.disconnect_label.c_str());
+      ImGui::PopStyleColor();
+    }
+
+    const int action = ImGuiWidgets::ModalActions(
+        dc ? top_bar.disconnect_label.c_str() : "Dismiss",
+        dc ? "Dismiss" : nullptr,
+        /*primary_enabled=*/true, /*primary_danger=*/dc);
+    if (action == 1) {
+      if (dc)
+        top_bar.on_disconnect();
       ImGui::CloseCurrentPopup();
+    } else if (action == 2) {
+      ImGui::CloseCurrentPopup();
+    }
     ImGuiWidgets::EndModal();
   }
+#ifndef __EMSCRIPTEN__
+  if (top_bar.has_server) {
+    const bool connected = imrmf_client_is_connected() != 0;
+    const bool ok = connected && imrmf_client_is_synced() != 0;
+    const ImVec4 col = ok          ? theme::palette::success
+                       : connected ? theme::palette::warning
+                                   : theme::palette::danger;
+    ImGui::PushStyleColor(ImGuiCol_Text, col);
+    ImGuiWidgets::IconText(ICON_MDI_ACCOUNT_MULTIPLE, "collab");
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%s", ok          ? "connected (synced)"
+                              : connected ? "connected, syncing"
+                                          : "not connected");
+    }
+    ImGui::SameLine();
+  }
+#endif
 #ifdef __EMSCRIPTEN__
-  {
+  if (top_bar.has_server) {
     const char *yjs = map_editor_yjs_status();
     if (yjs && yjs[0]) {
       bool ok = std::strcmp(yjs, "connected") == 0 && map_editor_yjs_synced();
@@ -1432,11 +1551,6 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
       std::free((void *)yjs);
   }
 #endif
-  if (top_bar.can_disconnect && top_bar.on_disconnect) {
-    if (ImGui::SmallButton("Disconnect"))
-      top_bar.on_disconnect();
-    ImGui::SameLine();
-  }
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("|");
   ImGui::SameLine();
@@ -1445,12 +1559,19 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 #ifdef __EMSCRIPTEN__
   can_undo = map_editor_yjs_can_undo() != 0;
   can_redo = map_editor_yjs_can_redo() != 0;
+#else
+  can_undo = imrmf_client_can_undo() != 0;
+  can_redo = imrmf_client_can_redo() != 0;
 #endif
   if (!can_undo)
     ImGui::BeginDisabled();
   if (ImGui::Button(ICON_MDI_UNDO)) {
 #ifdef __EMSCRIPTEN__
     map_editor_yjs_undo();
+#else
+    imrmf_client_undo();
+    g_local_edit = false;
+    state.dirty = false;
 #endif
   }
   if (!can_undo)
@@ -1463,6 +1584,10 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   if (ImGui::Button(ICON_MDI_REDO)) {
 #ifdef __EMSCRIPTEN__
     map_editor_yjs_redo();
+#else
+    imrmf_client_redo();
+    g_local_edit = false;
+    state.dirty = false;
 #endif
   }
   if (!can_redo)
@@ -2772,6 +2897,38 @@ void EditorView::draw_layer_config_panel(Building &building,
     state.new_layer_filename.clear();
   }
 
+  // A failed layer otherwise renders as nothing, with no hint why.
+  auto missing_badge = [&](const std::string &cache_key,
+                           const std::string &path) {
+    if (!texture_provider_ ||
+        texture_provider_->status_of(cache_key) != canvas::LoadStatus::Failed)
+      return;
+    ImGui::SameLine();
+    ImGui::TextColored(theme::palette::danger, ICON_MDI_ALERT_CIRCLE);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("file not found: %s", path.c_str());
+  };
+
+  auto path_notes = [&](const std::string &cache_key, const std::string &path) {
+    if (path.empty())
+      return;
+    if (texture_provider_ &&
+        texture_provider_->status_of(cache_key) == canvas::LoadStatus::Failed) {
+      ImGui::TextColored(theme::palette::danger,
+                         ICON_MDI_ALERT_CIRCLE " file not found");
+    }
+    if (!asset_path_is_portable(path)) {
+      ImGui::TextColored(theme::palette::warning,
+                         ICON_MDI_ALERT_OUTLINE " outside the map folder");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Paths are relative to the building.yaml directory. "
+                          "This one is not, so it breaks if the map moves and "
+                          "it cannot round-trip through a .rmfmap bundle "
+                          "unchanged.");
+      }
+    }
+  };
+
   if (ImGui::BeginTable("##layers_tbl", 1, ImGuiTableFlags_RowBg)) {
     ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch);
 
@@ -2783,6 +2940,8 @@ void EditorView::draw_layer_config_panel(Building &building,
       flush_pending_layer(level, state);
       state.selected_layer = kFloorplanSel;
     }
+    missing_badge(canvas::floorplan_cache_key(level.name),
+                  level.drawing_filename);
     ImGui::PopID();
 
     for (int i = 0; i < (int)level.layers.size(); ++i) {
@@ -2799,6 +2958,7 @@ void EditorView::draw_layer_config_panel(Building &building,
       }
       if (aligning)
         ImGui::PopStyleColor();
+      missing_badge(canvas::layer_cache_key(level.name, L.name), L.filename);
       ImGui::PopID();
     }
     ImGui::EndTable();
@@ -2836,6 +2996,8 @@ void EditorView::draw_layer_config_panel(Building &building,
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Browse files");
       ImGui::EndTable();
+      path_notes(canvas::floorplan_cache_key(level.name),
+                 level.drawing_filename);
       if (fp_commit) {
         yjs_op_drawing_set(level.name, level.drawing_filename);
         texture_provider_->clear_cache();
@@ -2960,6 +3122,7 @@ void EditorView::draw_layer_config_panel(Building &building,
       if (ImGui::IsItemDeactivatedAfterEdit())
         l_commit = true;
       ImGui::EndTable();
+      path_notes(canvas::layer_cache_key(level.name, L.name), L.filename);
     }
 
     const float full = ImGui::GetContentRegionAvail().x;
@@ -4284,7 +4447,8 @@ void EditorView::handle_floor_align_input(Building &building,
   }
 }
 
-void EditorView::draw_version_strip(EditorState &state) {
+void EditorView::draw_version_strip(EditorState &state,
+                                    const TopBarHooks &top_bar) {
   const bool on_snapshot = !state.snapshot_dir.empty();
   // Pull up over the child spacing so no bg sliver shows above the bar.
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() -
@@ -4293,15 +4457,46 @@ void EditorView::draw_version_strip(EditorState &state) {
                         on_snapshot ? theme::mix(theme::palette::surface,
                                                  theme::palette::warning, 0.30f)
                                     : theme::palette::surface);
-  ImGui::BeginChild("##version_strip", ImVec2(0, 0), false,
+  // A borderless child ignores WindowPadding unless asked. Y stays 0, the row
+  // centres itself.
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(theme::metrics::window_pad_x, 0.0f));
+  ImGui::BeginChild("##version_strip", ImVec2(0, 0),
+                    ImGuiChildFlags_AlwaysUseWindowPadding,
                     ImGuiWindowFlags_NoScrollbar);
+  ImGui::PopStyleVar();
   {
     float row_h = ImGui::GetFrameHeight();
     float avail_h = ImGui::GetContentRegionAvail().y;
     if (avail_h > row_h)
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (avail_h - row_h) * 0.5f);
   }
+  auto download_button = [&](bool same_line) {
+    if (!top_bar.on_download_map)
+      return;
+    if (same_line) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("|");
+      ImGui::SameLine();
+    }
+    if (ImGui::Button(ICON_MDI_DOWNLOAD))
+      top_bar.on_download_map();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Download map");
+  };
+
   ImGui::AlignTextToFramePadding();
+  if (!top_bar.has_server) {
+    // Nothing else in this strip means anything without a server.
+    download_button(/*same_line=*/false);
+    if (!state.status_message.empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", state.status_message.c_str());
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    return;
+  }
   if (!state.branch.empty()) {
     ImGui::TextUnformatted("Branch:");
     ImGui::SameLine();
@@ -4445,6 +4640,12 @@ void EditorView::draw_version_strip(EditorState &state) {
   if (!state.deploy_status.empty()) {
     ImGui::SameLine();
     ImGui::TextDisabled("%s", state.deploy_status.c_str());
+  }
+  download_button(/*same_line=*/true);
+  // draw_status_bar is browser-only, so this is the desktop's only feedback.
+  if (!state.status_message.empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", state.status_message.c_str());
   }
   ImGui::EndChild();
   ImGui::PopStyleColor();

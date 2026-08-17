@@ -140,7 +140,7 @@ pub enum MountInfo {
 /// Wire format for POST /mount. The discriminator matches the `kind` field
 /// in MountInfo so a client can round-trip status back into a mount request
 /// (minus the secret, which they keep client-side).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MountConfig {
     Local {
@@ -153,11 +153,62 @@ pub enum MountConfig {
         #[serde(default)]
         branch: String,
         region: String,
+        // Empty means reuse whatever the server already holds, so a client can
+        // remount without ever being sent the credentials.
+        #[serde(default)]
         access_key_id: String,
+        #[serde(default)]
         secret_access_key: String,
         #[serde(default)]
         session_token: Option<String>,
         #[serde(default)]
         endpoint_url: Option<String>,
     },
+}
+
+// Hand-written so credentials cannot reach a log line. A derived Debug would
+// make any future `{cfg:?}` print the secret.
+impl std::fmt::Debug for MountConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountConfig::Local { path } => f
+                .debug_struct("MountConfig::Local")
+                .field("path", path)
+                .finish(),
+            MountConfig::S3 {
+                bucket,
+                prefix,
+                branch,
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                endpoint_url,
+            } => f
+                .debug_struct("MountConfig::S3")
+                .field("bucket", bucket)
+                .field("prefix", prefix)
+                .field("branch", branch)
+                .field("region", region)
+                .field("access_key_id", access_key_id)
+                .field(
+                    "secret_access_key",
+                    &redacted(!secret_access_key.is_empty()),
+                )
+                .field(
+                    "session_token",
+                    &redacted(session_token.as_deref().is_some_and(|t| !t.is_empty())),
+                )
+                .field("endpoint_url", endpoint_url)
+                .finish(),
+        }
+    }
+}
+
+fn redacted(present: bool) -> &'static str {
+    if present {
+        "<set>"
+    } else {
+        "<unset>"
+    }
 }

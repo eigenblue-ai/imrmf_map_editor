@@ -1,0 +1,20 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Vendored miniz 3.1.2 (MIT, see LICENSE.miniz). Single TU, pure C, builds
+# unchanged under emscripten.
+#
+# MINIZ_NO_ZLIB_COMPATIBLE_NAMES is required: @curl links a real zlib, and
+# without it miniz also exports compress/uncompress/crc32/adler32 and the link
+# fails on duplicate symbols.
+cc_library(
+    name = "miniz",
+    srcs = ["miniz.c"],
+    hdrs = ["miniz.h"],
+    defines = [
+        "MINIZ_NO_STDIO",
+        "MINIZ_NO_ZLIB_COMPATIBLE_NAMES",
+    ],
+    strip_include_prefix = "/",
+)

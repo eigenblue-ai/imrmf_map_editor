@@ -57,9 +57,24 @@ struct Cli {
     fs_browse_root: PathBuf,
 
     /// Backend to mount at startup.
-    /// Non-`none` puts the server in locked single-mount mode (POST /mount and /unmount return 409).
+    /// Non-`none` puts the server in locked single-mount mode (POST /mount and /unmount return 409)
+    /// unless --allow-remount is set.
     #[arg(long, value_enum, env = "IMRMF_AUTO_MOUNT_KIND", default_value_t = AutoMountKind::None)]
     auto_mount_kind: AutoMountKind,
+
+    /// Keep POST /mount open even when a backend was mounted at startup, so a
+    /// client can point the server somewhere else. Remounting resets the shared
+    /// doc for everyone connected, so it stays off by default.
+    /// Boolish so the env var takes 1/0/yes/no/on/off, not just true/false.
+    #[arg(
+        long,
+        env = "IMRMF_ALLOW_REMOUNT",
+        default_value = "false",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new(),
+    )]
+    allow_remount: bool,
 
     #[arg(long, env = "IMRMF_AUTO_MOUNT_LOCAL_PATH")]
     auto_mount_local_path: Option<String>,
@@ -156,7 +171,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    let locked = !matches!(cli.auto_mount_kind, AutoMountKind::None);
+    let auto_mounting = !matches!(cli.auto_mount_kind, AutoMountKind::None);
+    let locked = auto_mounting && !cli.allow_remount;
     let app_state = state::AppState::new(validator, locked);
 
     let backend_kind: Option<&'static str> = match cli.auto_mount_kind {
@@ -164,7 +180,7 @@ async fn main() -> Result<()> {
         AutoMountKind::Local => Some("local"),
         AutoMountKind::S3 => Some("s3"),
     };
-    if locked {
+    if auto_mounting {
         let cfg = build_auto_mount_config(&cli)?;
         let buildings = app_state
             .mount(cfg, &cache_root)

@@ -5,6 +5,7 @@
 #include "canvas/canvas.hpp"
 
 #include "canvas/gl.hpp"
+#include "canvas/texture_decode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -94,67 +95,6 @@ int lane_orientation_sign(const Lane &l) {
   return 0;
 }
 
-unsigned int upload_rgba(const unsigned char *data, int w, int h) {
-  unsigned int id = 0;
-  glGenTextures(1, &id);
-  glBindTexture(GL_TEXTURE_2D, id);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-               data);
-  return id;
-}
-
-std::vector<unsigned char> colorize_rgba(const std::vector<unsigned char> &gray,
-                                         int w, int h, double cr, double cg,
-                                         double cb) {
-  std::vector<unsigned char> out((size_t)w * h * 4);
-  unsigned char r = (unsigned char)std::round(std::clamp(cr, 0.0, 1.0) * 255.0);
-  unsigned char g = (unsigned char)std::round(std::clamp(cg, 0.0, 1.0) * 255.0);
-  unsigned char b = (unsigned char)std::round(std::clamp(cb, 0.0, 1.0) * 255.0);
-  for (int i = 0; i < w * h; ++i) {
-    unsigned char v = gray[(size_t)i];
-    if (v < 100) {
-      out[i * 4] = r;
-      out[i * 4 + 1] = g;
-      out[i * 4 + 2] = b;
-      out[i * 4 + 3] = 127;
-    } else if (v > 200) {
-      out[i * 4] = 0;
-      out[i * 4 + 1] = 0;
-      out[i * 4 + 2] = 0;
-      out[i * 4 + 3] = 0;
-    } else {
-      out[i * 4] = v;
-      out[i * 4 + 1] = v;
-      out[i * 4 + 2] = v;
-      out[i * 4 + 3] = 50;
-    }
-  }
-  return out;
-}
-
-void regenerate_colorize(LayerTexture &tex, double cr, double cg, double cb) {
-  if (tex.width <= 0 || tex.height <= 0 || tex.grayscale.empty())
-    return;
-  auto rgba = colorize_rgba(tex.grayscale, tex.width, tex.height, cr, cg, cb);
-  if (tex.id)
-    glDeleteTextures(1, &tex.id);
-  if (tex.id_inv)
-    glDeleteTextures(1, &tex.id_inv);
-  tex.id = upload_rgba(rgba.data(), tex.width, tex.height);
-  auto inv = rgba;
-  for (int i = 0; i < tex.width * tex.height; ++i) {
-    inv[i * 4] = (unsigned char)(255 - inv[i * 4]);
-    inv[i * 4 + 1] = (unsigned char)(255 - inv[i * 4 + 1]);
-    inv[i * 4 + 2] = (unsigned char)(255 - inv[i * 4 + 2]);
-  }
-  tex.id_inv = upload_rgba(inv.data(), tex.width, tex.height);
-  tex.last_color_r = cr;
-  tex.last_color_g = cg;
-  tex.last_color_b = cb;
-}
-
 float poly_signed_area2(const std::vector<ImVec2> &p) {
   float a = 0.0f;
   for (size_t i = 0, n = p.size(); i < n; ++i) {
@@ -223,6 +163,15 @@ constexpr float kVertexNameMinScale = 1.0f;
 
 } // namespace
 
+std::string floorplan_cache_key(const std::string &level_name) {
+  return "fp:" + level_name;
+}
+
+std::string layer_cache_key(const std::string &level_name,
+                            const std::string &layer_name) {
+  return "lay:" + level_name + ":" + layer_name;
+}
+
 TextureProvider::~TextureProvider() {
   for (auto &[_, t] : textures_) {
     if (t.id)
@@ -242,6 +191,11 @@ LayerTexture &TextureProvider::acquire(const std::string &cache_key,
     trigger_load(tex, cache_key, asset_id, asset_path, tr, tg, tb);
   }
   return tex;
+}
+
+LoadStatus TextureProvider::status_of(const std::string &cache_key) const {
+  auto it = textures_.find(cache_key);
+  return it == textures_.end() ? LoadStatus::NotStarted : it->second.status;
 }
 
 MapCanvas::MapCanvas(std::string asset_id, TextureProvider *provider)
@@ -313,8 +267,9 @@ void MapCanvas::draw(const Building &building, int level_idx,
              (float)(maxy - miny));
     } else if (opts.draw_floorplan && provider_ &&
                !level.drawing_filename.empty()) {
-      LayerTexture &fp = provider_->acquire(
-          "fp:" + level.name, asset_id_, level.drawing_filename, 1.0, 1.0, 1.0);
+      LayerTexture &fp =
+          provider_->acquire(floorplan_cache_key(level.name), asset_id_,
+                             level.drawing_filename, 1.0, 1.0, 1.0);
       if (fp.status == LoadStatus::Ok && fp.width > 0 && fp.height > 0)
         fit_to((double)fp.width * 0.5, (double)fp.height * 0.5, (float)fp.width,
                (float)fp.height);
@@ -333,8 +288,9 @@ void MapCanvas::draw(const Building &building, int level_idx,
   }
   if (opts.draw_floorplan && fp_sess.visible && provider_ &&
       !level.drawing_filename.empty()) {
-    LayerTexture &fp = provider_->acquire(
-        "fp:" + level.name, asset_id_, level.drawing_filename, 1.0, 1.0, 1.0);
+    LayerTexture &fp =
+        provider_->acquire(floorplan_cache_key(level.name), asset_id_,
+                           level.drawing_filename, 1.0, 1.0, 1.0);
     if (fp.status == LoadStatus::Ok) {
       ImVec2 p_min = world_to_screen(0.0, 0.0);
       ImVec2 p_max = world_to_screen((double)fp.width, (double)fp.height);
@@ -364,7 +320,7 @@ void MapCanvas::draw(const Building &building, int level_idx,
       double cg = sess && sess->color_g ? (double)*sess->color_g : L.color_g;
       double cb = sess && sess->color_b ? (double)*sess->color_b : L.color_b;
       double ca = sess && sess->alpha ? (double)*sess->alpha : L.color_a;
-      std::string key = "lay:" + level.name + ":" + L.name;
+      std::string key = layer_cache_key(level.name, L.name);
       LayerTexture &tex =
           provider_->acquire(key, asset_id_, L.filename, cr, cg, cb);
       if (tex.status != LoadStatus::Ok)

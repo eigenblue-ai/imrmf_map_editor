@@ -53,7 +53,7 @@ impl S3Storage {
         let aws_cfg = loader.load().await;
         let mut s3_builder = aws_sdk_s3::config::Builder::from(&aws_cfg);
         if cfg.endpoint_url.is_some() {
-            // Path-style addressing makes things work with minio and other S3-compatible endpoints
+            // Path-style addressing is what S3-compatible endpoints expect
             s3_builder = s3_builder.force_path_style(true);
         }
         let client = Client::from_conf(s3_builder.build());

@@ -138,3 +138,14 @@ filegroup(
     name = "font_mdi",
     srcs = ["fonts/materialdesignicons-webfont.ttf"],
 )
+
+# The OFL and the Apache license the two fonts ship under. Both licenses want
+# the text distributed with the font, and font_ttf / font_mdi are single files
+# because --preload-file takes one $(location).
+filegroup(
+    name = "font_licenses",
+    srcs = [
+        "fonts/MDI-LICENSE",
+        "fonts/OFL.txt",
+    ],
+)

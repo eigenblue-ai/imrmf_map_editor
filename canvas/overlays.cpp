@@ -102,9 +102,20 @@ void draw_layers_overlay(
         ImVec2(pane_w, 0), ImGuiChildFlags_AutoResizeY);
 
     {
+      auto missing = [&](const std::string &key, const std::string &path) {
+        TextureProvider *p = canvas.provider();
+        if (!p || p->status_of(key) != LoadStatus::Failed)
+          return;
+        ImGui::SameLine();
+        ImGui::TextColored(theme::palette::danger, ICON_MDI_ALERT_CIRCLE);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("file not found: %s", path.c_str());
+      };
+
       FloorplanSession &fps = fp_sessions[level.name];
       ImGui::PushID("__fp");
       ImGui::TextUnformatted("Floorplan");
+      missing(floorplan_cache_key(level.name), level.drawing_filename);
       ImGui::Checkbox("visible##fp", &fps.visible);
       ImGui::SameLine();
       ImGui::Checkbox("invert##fp", &fps.invert);
@@ -119,6 +130,7 @@ void draw_layers_overlay(
 
         ImGui::PushID(i);
         ImGui::TextUnformatted(L.name.c_str());
+        missing(layer_cache_key(level.name, L.name), L.filename);
 
         float col[4] = {
             sess.color_r ? *sess.color_r : (float)L.color_r,

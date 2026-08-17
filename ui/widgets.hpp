@@ -192,8 +192,11 @@ inline bool WindowTitleBar(const char *title) {
 // fill_host is for when the modal IS the window (a launcher dialog): anchored
 // top-left, no dim backdrop, height still tracking the content so the caller
 // can size its OS window to match.
+// `dismissable` adds click-outside and Escape to close, neither of which ImGui
+// gives modals on its own. Ignored when fill_host, since that modal IS the
+// window and closing it would leave an empty app.
 inline bool BeginModal(const char *id, float width = 360.0f,
-                       bool fill_host = false) {
+                       bool fill_host = false, bool dismissable = true) {
   ImGuiViewport *vp = ImGui::GetMainViewport();
   if (fill_host) {
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -226,8 +229,8 @@ inline bool BeginModal(const char *id, float width = 360.0f,
   ImGuiWindowFlags flags =
       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove;
   // The host's own title bar is the dialog's, so this would be a second one.
-  // No scrollbars either: the host is sized to this window's content, so there
-  // is nothing to scroll to.
+  // No scrollbar, since it steals content width, which re-wraps the text and
+  // changes the height the host is fitting itself to. That loop never settles.
   if (fill_host) {
     flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar |
              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
@@ -236,8 +239,19 @@ inline bool BeginModal(const char *id, float width = 360.0f,
   if (!open) {
     ImGui::PopStyleColor(4);
     ImGui::PopStyleVar(3);
+    return false;
   }
-  return open;
+  if (dismissable && !fill_host) {
+    // AnyWindow, so a combo or nested popup opened from the modal does not
+    // count as clicking the backdrop.
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+      ImGui::CloseCurrentPopup();
+    // Escape deactivates an edited field first, so only close once nothing is.
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsAnyItemActive())
+      ImGui::CloseCurrentPopup();
+  }
+  return true;
 }
 
 inline void EndModal() {
@@ -248,9 +262,10 @@ inline void EndModal() {
 
 // Right-aligned footer for a modal. Returns 1 if the primary button was
 // pressed, 2 if the secondary, otherwise 0. The primary is disabled when
-// !primary_enabled.
+// !primary_enabled, and drawn in the danger colour when primary_danger.
 inline int ModalActions(const char *primary, const char *secondary = nullptr,
-                        bool primary_enabled = true) {
+                        bool primary_enabled = true,
+                        bool primary_danger = false) {
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::Spacing();
@@ -267,8 +282,15 @@ inline int ModalActions(const char *primary, const char *secondary = nullptr,
     ImGui::SameLine();
   }
   ImGui::BeginDisabled(!primary_enabled);
+  if (primary_danger) {
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          theme::with_alpha(theme::palette::danger, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::palette::danger);
+  }
   if (ImGui::Button(primary, ImVec2(bw, 0.0f)))
     result = 1;
+  if (primary_danger)
+    ImGui::PopStyleColor(2);
   ImGui::EndDisabled();
   return result;
 }

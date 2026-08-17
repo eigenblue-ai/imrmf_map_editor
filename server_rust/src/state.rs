@@ -117,12 +117,118 @@ impl AppState {
         Ok(out)
     }
 
+    /// Non-secret view of the active mount, for prefilling the connect form.
+    /// Credentials are reported as present or absent, never returned.
+    pub async fn mount_config_public(&self) -> Option<serde_json::Value> {
+        match self.last_mount_cfg.read().await.as_ref()? {
+            MountConfig::Local { path } => Some(serde_json::json!({
+                "kind": "local",
+                "path": path,
+            })),
+            MountConfig::S3 {
+                bucket,
+                prefix,
+                branch,
+                region,
+                access_key_id,
+                secret_access_key,
+                session_token,
+                endpoint_url,
+            } => Some(serde_json::json!({
+                "kind": "s3",
+                "bucket": bucket,
+                "prefix": prefix,
+                "branch": branch,
+                "region": region,
+                "endpoint_url": endpoint_url,
+                // Presence only. A caller learns that credentials exist, never
+                // what they are.
+                "has_access_key_id": !access_key_id.is_empty(),
+                "has_secret_access_key": !secret_access_key.is_empty(),
+                "has_session_token": session_token.as_deref().is_some_and(|t| !t.is_empty()),
+            })),
+        }
+    }
+
+    /// Fills blank fields from the mount already in place, so a client can
+    /// change the bucket without being handed the secret first.
+    async fn inherit_from_current(&self, cfg: MountConfig) -> MountConfig {
+        let MountConfig::S3 {
+            bucket,
+            prefix,
+            mut branch,
+            region,
+            mut access_key_id,
+            mut secret_access_key,
+            mut session_token,
+            endpoint_url,
+        } = cfg
+        else {
+            return cfg;
+        };
+        if let Some(MountConfig::S3 {
+            region: prev_region,
+            endpoint_url: prev_endpoint,
+            branch: prev_branch,
+            access_key_id: prev_key,
+            secret_access_key: prev_secret,
+            session_token: prev_token,
+            ..
+        }) = self.last_mount_cfg.read().await.as_ref()
+        {
+            // Only inherit when the request points at the backend we are
+            // already talking to. Without this a caller could send blank
+            // credentials with an endpoint of their choosing and have us sign
+            // requests to it with the operator's real keys. Changing the
+            // endpoint or region means bring your own.
+            let same_target = prev_endpoint == &endpoint_url && prev_region == &region;
+            if same_target {
+                if branch.is_empty() {
+                    branch = prev_branch.clone();
+                }
+                if access_key_id.is_empty() {
+                    access_key_id = prev_key.clone();
+                }
+                if secret_access_key.is_empty() {
+                    secret_access_key = prev_secret.clone();
+                }
+                if session_token.as_deref().is_none_or(|t| t.is_empty()) {
+                    session_token = prev_token.clone();
+                }
+            }
+        }
+        MountConfig::S3 {
+            bucket,
+            prefix,
+            branch,
+            region,
+            access_key_id,
+            secret_access_key,
+            session_token,
+            endpoint_url,
+        }
+    }
+
     /// Install a new storage backend and load `building_id` into the Doc
     pub async fn mount(
         &self,
         cfg: MountConfig,
         cache_root: &std::path::Path,
     ) -> Result<Vec<String>> {
+        let cfg = self.inherit_from_current(cfg).await;
+        if let MountConfig::S3 {
+            access_key_id,
+            secret_access_key,
+            ..
+        } = &cfg
+        {
+            if access_key_id.is_empty() || secret_access_key.is_empty() {
+                return Err(anyhow!(
+                    "credentials are required when mounting a different \
+                     endpoint or region than the one already mounted"
+                ));
+            }
+        }
         let cfg_for_store = cfg.clone();
         let storage: Arc<dyn Storage> = match cfg {
             MountConfig::Local { path } => {
