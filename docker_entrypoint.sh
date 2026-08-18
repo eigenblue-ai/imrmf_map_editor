@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-CACHE_ROOT="${IMRMF_CACHE_ROOT:-/var/imrmf/cache}"
-PORT="${IMRMF_PORT:-30010}"
-WASM_DIR="${IMRMF_WASM_DIR:-/opt/imrmf/www}"
-EDITOR_BIN="${IMRMF_EDITOR_BIN:-/opt/imrmf/imrmf_map_editor}"
+CACHE_ROOT="${RMF_CACHE_ROOT:-/var/imrmf/cache}"
+PORT="${RMF_PORT:-30010}"
+WASM_DIR="${RMF_WASM_DIR:-/opt/imrmf/www}"
+EDITOR_BIN="${RMF_EDITOR_BIN:-/opt/imrmf/rmf_map_editor}"
 
 mkdir -p "$CACHE_ROOT"
 
@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "starting imrmf_map_editor on :$PORT (cache: $CACHE_ROOT)"
+echo "starting rmf_map_editor on :$PORT (cache: $CACHE_ROOT)"
 "$EDITOR_BIN" \
   --port "$PORT" \
   --wasm-dir "$WASM_DIR" \
@@ -34,8 +34,8 @@ echo "starting imrmf_map_editor on :$PORT (cache: $CACHE_ROOT)"
 EDITOR_PID=$!
 
 YAML_PATH="${RMF_BUILDING_MAP:-}"
-if [ -z "$YAML_PATH" ] && [ -n "${IMRMF_AUTO_BUILDING:-}" ]; then
-  YAML_PATH="$CACHE_ROOT/$IMRMF_AUTO_BUILDING/$IMRMF_AUTO_BUILDING.building.yaml"
+if [ -z "$YAML_PATH" ] && [ -n "${RMF_AUTO_BUILDING:-}" ]; then
+  YAML_PATH="$CACHE_ROOT/$RMF_AUTO_BUILDING/$RMF_AUTO_BUILDING.building.yaml"
 fi
 if [ -z "$YAML_PATH" ]; then
   YAML_PATH="$(find "$CACHE_ROOT" -maxdepth 3 -name '*.building.yaml' -print -quit 2>/dev/null || true)"

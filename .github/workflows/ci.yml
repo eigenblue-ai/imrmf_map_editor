@@ -93,7 +93,7 @@ jobs:
           repository-cache: true
 
       - name: Build server
-        run: bazel build //server_rust:imrmf_map_editor
+        run: bazel build //server_rust:rmf_map_editor
 
       - name: Build wasm app
         run: bazel build --config=wasm //app:editor_wasm
@@ -103,9 +103,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/server_rust dist/app
-          cp -RL bazel-bin/server_rust/imrmf_map_editor dist/server_rust/
+          cp -RL bazel-bin/server_rust/rmf_map_editor dist/server_rust/
           # tar -h to flatten the nested runfiles symlinks
-          tar -C bazel-bin/server_rust -chf - imrmf_map_editor.runfiles \
+          tar -C bazel-bin/server_rust -chf - rmf_map_editor.runfiles \
             | tar -xf - -C dist/server_rust
           cp -RL bazel-bin/app/editor_wasm dist/app/
 

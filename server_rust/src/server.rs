@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 use crate::storage::MountConfig;
-use imrmf_core::sync;
+use rmf_core::sync;
 
 pub async fn run(
     state: Arc<AppState>,

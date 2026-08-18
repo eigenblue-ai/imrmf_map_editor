@@ -1,5 +1,5 @@
 module(
-    name = "imrmf_map_editor",
+    name = "rmf_map_editor",
     version = "0.0.0",
 )
 
@@ -60,11 +60,11 @@ python.toolchain(
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 pip.parse(
-    hub_name = "imrmf_pip",
+    hub_name = "rmf_pip",
     python_version = "3.12",
     requirements_lock = "//third_party:requirements.txt",
 )
-use_repo(pip, "imrmf_pip")
+use_repo(pip, "rmf_pip")
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 

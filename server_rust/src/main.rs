@@ -19,7 +19,7 @@ mod storage;
 mod validate;
 
 #[derive(Parser, Debug)]
-#[command(name = "imrmf_map_editor")]
+#[command(name = "rmf_map_editor")]
 #[command(about = "OpenRMF map editor server (Yjs CRDT + storage backend)")]
 struct Cli {
     /// HTTP and WebSocket port.
@@ -36,7 +36,7 @@ struct Cli {
 
     /// Root directory for the on-disk yaml cache.
     /// The ROS2 side process watches files under here
-    /// Defaults to `$XDG_CACHE_HOME/imrmf_map_editor` or `/var/imrmf/cache`.
+    /// Defaults to `$XDG_CACHE_HOME/rmf_map_editor` or `/var/imrmf/cache`.
     #[arg(long)]
     cache_root: Option<PathBuf>,
 
@@ -59,7 +59,7 @@ struct Cli {
     /// Backend to mount at startup.
     /// Non-`none` puts the server in locked single-mount mode (POST /mount and /unmount return 409)
     /// unless --allow-remount is set.
-    #[arg(long, value_enum, env = "IMRMF_AUTO_MOUNT_KIND", default_value_t = AutoMountKind::None)]
+    #[arg(long, value_enum, env = "RMF_AUTO_MOUNT_KIND", default_value_t = AutoMountKind::None)]
     auto_mount_kind: AutoMountKind,
 
     /// Keep POST /mount open even when a backend was mounted at startup, so a
@@ -68,7 +68,7 @@ struct Cli {
     /// Boolish so the env var takes 1/0/yes/no/on/off, not just true/false.
     #[arg(
         long,
-        env = "IMRMF_ALLOW_REMOUNT",
+        env = "RMF_ALLOW_REMOUNT",
         default_value = "false",
         num_args = 0..=1,
         default_missing_value = "true",
@@ -76,27 +76,27 @@ struct Cli {
     )]
     allow_remount: bool,
 
-    #[arg(long, env = "IMRMF_AUTO_MOUNT_LOCAL_PATH")]
+    #[arg(long, env = "RMF_AUTO_MOUNT_LOCAL_PATH")]
     auto_mount_local_path: Option<String>,
 
-    #[arg(long, env = "IMRMF_S3_BUCKET")]
+    #[arg(long, env = "RMF_S3_BUCKET")]
     s3_bucket: Option<String>,
-    #[arg(long, env = "IMRMF_S3_PREFIX", default_value = "")]
+    #[arg(long, env = "RMF_S3_PREFIX", default_value = "")]
     s3_prefix: String,
-    #[arg(long, env = "IMRMF_S3_BRANCH", default_value = "")]
+    #[arg(long, env = "RMF_S3_BRANCH", default_value = "")]
     s3_branch: String,
-    #[arg(long, env = "IMRMF_S3_REGION", default_value = "us-east-1")]
+    #[arg(long, env = "RMF_S3_REGION", default_value = "us-east-1")]
     s3_region: String,
-    #[arg(long, env = "IMRMF_S3_ENDPOINT")]
+    #[arg(long, env = "RMF_S3_ENDPOINT")]
     s3_endpoint: Option<String>,
-    #[arg(long, env = "IMRMF_S3_ACCESS_KEY_ID")]
+    #[arg(long, env = "RMF_S3_ACCESS_KEY_ID")]
     s3_access_key_id: Option<String>,
-    #[arg(long, env = "IMRMF_S3_SECRET_ACCESS_KEY")]
+    #[arg(long, env = "RMF_S3_SECRET_ACCESS_KEY")]
     s3_secret_access_key: Option<String>,
-    #[arg(long, env = "IMRMF_S3_SESSION_TOKEN")]
+    #[arg(long, env = "RMF_S3_SESSION_TOKEN")]
     s3_session_token: Option<String>,
 
-    #[arg(long, env = "IMRMF_AUTO_BUILDING")]
+    #[arg(long, env = "RMF_AUTO_BUILDING")]
     auto_building: Option<String>,
 }
 
@@ -105,6 +105,22 @@ enum AutoMountKind {
     None,
     Local,
     S3,
+}
+
+// Deployments that predate the rename still set IMRMF_*. Adopt those before
+// clap looks, so an old manifest keeps working.
+fn adopt_legacy_env() {
+    for (key, value) in std::env::vars_os() {
+        let Some(name) = key.to_str() else { continue };
+        let Some(rest) = name.strip_prefix("IMRMF_") else {
+            continue;
+        };
+        let renamed = format!("RMF_{rest}");
+        if std::env::var_os(&renamed).is_none() {
+            tracing::warn!("{name} is deprecated, use {renamed}");
+            std::env::set_var(renamed, value);
+        }
+    }
 }
 
 #[tokio::main]
@@ -116,6 +132,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
+    adopt_legacy_env();
     let cli = Cli::parse();
 
     let cache_root = resolve_cache_root(cli.cache_root.clone())?;
@@ -189,7 +206,7 @@ async fn main() -> Result<()> {
         info!("auto-mount: {} buildings available", buildings.len());
         if let Some(id) = cli.auto_building.as_ref() {
             if !buildings.iter().any(|b| b == id) {
-                tracing::warn!("IMRMF_AUTO_BUILDING={id} not in backend (have {buildings:?})");
+                tracing::warn!("RMF_AUTO_BUILDING={id} not in backend (have {buildings:?})");
             } else {
                 app_state
                     .load_building(id)
@@ -252,19 +269,20 @@ fn build_auto_mount_config(cli: &Cli) -> Result<MountConfig> {
         AutoMountKind::None => unreachable!(),
         AutoMountKind::Local => {
             let path = cli.auto_mount_local_path.clone().ok_or_else(|| {
-                anyhow::anyhow!("IMRMF_AUTO_MOUNT_KIND=local requires IMRMF_AUTO_MOUNT_LOCAL_PATH")
+                anyhow::anyhow!("RMF_AUTO_MOUNT_KIND=local requires RMF_AUTO_MOUNT_LOCAL_PATH")
             })?;
             Ok(MountConfig::Local { path })
         }
         AutoMountKind::S3 => {
-            let bucket = cli.s3_bucket.clone().ok_or_else(|| {
-                anyhow::anyhow!("IMRMF_AUTO_MOUNT_KIND=s3 requires IMRMF_S3_BUCKET")
-            })?;
+            let bucket = cli
+                .s3_bucket
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("RMF_AUTO_MOUNT_KIND=s3 requires RMF_S3_BUCKET"))?;
             let access_key_id = cli.s3_access_key_id.clone().ok_or_else(|| {
-                anyhow::anyhow!("IMRMF_AUTO_MOUNT_KIND=s3 requires IMRMF_S3_ACCESS_KEY_ID")
+                anyhow::anyhow!("RMF_AUTO_MOUNT_KIND=s3 requires RMF_S3_ACCESS_KEY_ID")
             })?;
             let secret_access_key = cli.s3_secret_access_key.clone().ok_or_else(|| {
-                anyhow::anyhow!("IMRMF_AUTO_MOUNT_KIND=s3 requires IMRMF_S3_SECRET_ACCESS_KEY")
+                anyhow::anyhow!("RMF_AUTO_MOUNT_KIND=s3 requires RMF_S3_SECRET_ACCESS_KEY")
             })?;
             Ok(MountConfig::S3 {
                 bucket,
@@ -283,9 +301,9 @@ fn build_auto_mount_config(cli: &Cli) -> Result<MountConfig> {
 /// Pick a cache root that doesn't require root permissions on a dev machine
 fn resolve_cache_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let chosen = explicit
-        .or_else(|| std::env::var_os("IMRMF_CACHE_ROOT").map(PathBuf::from))
+        .or_else(|| std::env::var_os("RMF_CACHE_ROOT").map(PathBuf::from))
         .or_else(|| {
-            std::env::var_os("XDG_CACHE_HOME").map(|p| PathBuf::from(p).join("imrmf_map_editor"))
+            std::env::var_os("XDG_CACHE_HOME").map(|p| PathBuf::from(p).join("rmf_map_editor"))
         })
         .or_else(|| {
             // /var/imrmf/cache is writable inside the docker image. Outside,
@@ -298,10 +316,9 @@ fn resolve_cache_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
             }
         })
         .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|h| PathBuf::from(h).join(".cache").join("imrmf_map_editor"))
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache").join("rmf_map_editor"))
         })
-        .unwrap_or_else(|| std::env::temp_dir().join("imrmf_map_editor"));
+        .unwrap_or_else(|| std::env::temp_dir().join("rmf_map_editor"));
     std::fs::create_dir_all(&chosen)
         .with_context(|| format!("creating cache root {}", chosen.display()))?;
     Ok(chosen)

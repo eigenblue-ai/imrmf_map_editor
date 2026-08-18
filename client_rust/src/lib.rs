@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use imrmf_core::{sync, yaml_bridge};
+use rmf_core::{sync, yaml_bridge};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
@@ -68,7 +68,7 @@ fn err(message: impl std::fmt::Display) -> *mut c_char {
 
 /// Frees any string returned by this library.
 #[no_mangle]
-pub extern "C" fn imrmf_client_string_free(p: *mut c_char) {
+pub extern "C" fn rmf_client_string_free(p: *mut c_char) {
     if !p.is_null() {
         unsafe { drop(CString::from_raw(p)) };
     }
@@ -97,7 +97,7 @@ fn get_text(url: &str) -> Result<String, String> {
 /// GET /config, handed back verbatim. Credentials are never in it, only whether
 /// the server holds any.
 #[no_mangle]
-pub extern "C" fn imrmf_client_fetch_config(server_url: *const c_char) -> *mut c_char {
+pub extern "C" fn rmf_client_fetch_config(server_url: *const c_char) -> *mut c_char {
     let base = from_c_str(server_url);
     match get_text(&format!("{}/config", base.trim_end_matches('/'))) {
         Ok(body) => ok(body),
@@ -108,7 +108,7 @@ pub extern "C" fn imrmf_client_fetch_config(server_url: *const c_char) -> *mut c
 /// GET /buildings for a server that already has a backend mounted, so a locked
 /// or auto-mounted server can be joined without POSTing a mount.
 #[no_mangle]
-pub extern "C" fn imrmf_client_list_buildings(server_url: *const c_char) -> *mut c_char {
+pub extern "C" fn rmf_client_list_buildings(server_url: *const c_char) -> *mut c_char {
     let base = from_c_str(server_url);
     match get_text(&format!("{}/buildings", base.trim_end_matches('/'))) {
         Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
@@ -131,7 +131,7 @@ pub extern "C" fn imrmf_client_list_buildings(server_url: *const c_char) -> *mut
 
 /// Mounts a backend. `config_json` is the server's MountConfig.
 #[no_mangle]
-pub extern "C" fn imrmf_client_mount(
+pub extern "C" fn rmf_client_mount(
     server_url: *const c_char,
     config_json: *const c_char,
 ) -> *mut c_char {
@@ -164,7 +164,7 @@ pub extern "C" fn imrmf_client_mount(
 /// Uploads one layer asset under the yaml-relative path the map refers to it
 /// by. The server re-checks both, this only keeps a bad request off the wire.
 #[no_mangle]
-pub extern "C" fn imrmf_client_put_asset(
+pub extern "C" fn rmf_client_put_asset(
     server_url: *const c_char,
     id: *const c_char,
     path: *const c_char,
@@ -243,7 +243,7 @@ fn percent_encode(s: &str) -> String {
 
 /// Tells the server to load a building into the shared doc.
 #[no_mangle]
-pub extern "C" fn imrmf_client_load_building(
+pub extern "C" fn rmf_client_load_building(
     server_url: *const c_char,
     id: *const c_char,
 ) -> *mut c_char {
@@ -262,7 +262,7 @@ pub extern "C" fn imrmf_client_load_building(
 
 /// Writes a building to the mounted backend, creating it if it is new.
 #[no_mangle]
-pub extern "C" fn imrmf_client_put_building(
+pub extern "C" fn rmf_client_put_building(
     server_url: *const c_char,
     id: *const c_char,
     yaml: *const c_char,
@@ -285,9 +285,9 @@ pub extern "C" fn imrmf_client_put_building(
 
 /// Connects to the y-sync WebSocket and syncs in the background.
 #[no_mangle]
-pub extern "C" fn imrmf_client_connect(ws_url: *const c_char) -> *mut c_char {
+pub extern "C" fn rmf_client_connect(ws_url: *const c_char) -> *mut c_char {
     let url = from_c_str(ws_url);
-    imrmf_client_disconnect();
+    rmf_client_disconnect();
 
     let doc = Arc::new(Mutex::new(Doc::new()));
     let synced = Arc::new(AtomicBool::new(false));
@@ -385,9 +385,9 @@ fn install_undo(doc: &Doc) {
 /// per edit was too slow. The seed is untracked, so the first undo cannot wipe
 /// the map the caller just opened.
 #[no_mangle]
-pub extern "C" fn imrmf_client_start_local_session(yaml: *const c_char) -> *mut c_char {
+pub extern "C" fn rmf_client_start_local_session(yaml: *const c_char) -> *mut c_char {
     let yaml = from_c_str(yaml);
-    imrmf_client_disconnect();
+    rmf_client_disconnect();
 
     let doc = Arc::new(Mutex::new(Doc::new()));
     {
@@ -438,22 +438,22 @@ fn undo_step(redo: bool) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_undo() -> c_int {
+pub extern "C" fn rmf_client_undo() -> c_int {
     undo_step(false) as c_int
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_redo() -> c_int {
+pub extern "C" fn rmf_client_redo() -> c_int {
     undo_step(true) as c_int
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_can_undo() -> c_int {
+pub extern "C" fn rmf_client_can_undo() -> c_int {
     UNDO.with(|u| u.borrow().as_ref().map(|m| m.can_undo()).unwrap_or(false)) as c_int
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_can_redo() -> c_int {
+pub extern "C" fn rmf_client_can_redo() -> c_int {
     UNDO.with(|u| u.borrow().as_ref().map(|m| m.can_redo()).unwrap_or(false)) as c_int
 }
 
@@ -462,13 +462,13 @@ fn tracing_log(msg: String) {
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_disconnect() {
+pub extern "C" fn rmf_client_disconnect() {
     UNDO.with(|u| *u.borrow_mut() = None);
     *session().lock().unwrap() = None;
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_is_synced() -> c_int {
+pub extern "C" fn rmf_client_is_synced() -> c_int {
     let guard = session().lock().unwrap();
     match guard.as_ref() {
         Some(s) if s.synced.load(Ordering::SeqCst) => 1,
@@ -477,7 +477,7 @@ pub extern "C" fn imrmf_client_is_synced() -> c_int {
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_remote_dirty() -> c_int {
+pub extern "C" fn rmf_client_remote_dirty() -> c_int {
     let guard = session().lock().unwrap();
     match guard.as_ref() {
         Some(s) if s.remote_dirty.load(Ordering::SeqCst) => 1,
@@ -486,7 +486,7 @@ pub extern "C" fn imrmf_client_remote_dirty() -> c_int {
 }
 
 #[no_mangle]
-pub extern "C" fn imrmf_client_clear_remote_dirty() {
+pub extern "C" fn rmf_client_clear_remote_dirty() {
     if let Some(s) = session().lock().unwrap().as_ref() {
         s.remote_dirty.store(false, Ordering::SeqCst);
     }
@@ -494,7 +494,7 @@ pub extern "C" fn imrmf_client_clear_remote_dirty() {
 
 /// The doc as building.yaml. Empty string until the first sync lands.
 #[no_mangle]
-pub extern "C" fn imrmf_client_snapshot_yaml() -> *mut c_char {
+pub extern "C" fn rmf_client_snapshot_yaml() -> *mut c_char {
     let guard = session().lock().unwrap();
     let Some(s) = guard.as_ref() else {
         return to_c_string(String::new());
@@ -509,7 +509,7 @@ pub extern "C" fn imrmf_client_snapshot_yaml() -> *mut c_char {
 
 /// Replaces the doc contents with `yaml` and ships the resulting update.
 #[no_mangle]
-pub extern "C" fn imrmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
+pub extern "C" fn rmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
     let yaml = from_c_str(yaml);
     let guard = session().lock().unwrap();
     let Some(s) = guard.as_ref() else {
@@ -531,7 +531,7 @@ pub extern "C" fn imrmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
 
 /// Whether the outbox is still open, i.e. the sync task is alive.
 #[no_mangle]
-pub extern "C" fn imrmf_client_is_connected() -> c_int {
+pub extern "C" fn rmf_client_is_connected() -> c_int {
     let guard = session().lock().unwrap();
     match guard.as_ref() {
         Some(s) if s.outbox.as_ref().is_some_and(|tx| !tx.is_closed()) => 1,
@@ -552,13 +552,13 @@ mod tests {
         let out = unsafe { CStr::from_ptr(raw) }
             .to_string_lossy()
             .into_owned();
-        imrmf_client_string_free(raw);
+        rmf_client_string_free(raw);
         out
     }
 
     fn push(yaml: &str) {
         let c = CString::new(yaml).unwrap();
-        assert!(take(imrmf_client_push_yaml(c.as_ptr())).starts_with("OK:"));
+        assert!(take(rmf_client_push_yaml(c.as_ptr())).starts_with("OK:"));
     }
 
     #[test]
@@ -618,34 +618,34 @@ mod tests {
     fn local_session_undoes_without_a_server() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let seed = CString::new("name: m\nlevels:\n  L1:\n    elevation: 0\n").unwrap();
-        assert!(take(imrmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
-        assert_eq!(imrmf_client_is_connected(), 0);
-        assert_eq!(imrmf_client_can_undo(), 0);
+        assert!(take(rmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
+        assert_eq!(rmf_client_is_connected(), 0);
+        assert_eq!(rmf_client_can_undo(), 0);
 
         push("name: m\nlevels:\n  L1:\n    elevation: 7\n");
-        assert_eq!(imrmf_client_can_undo(), 1);
+        assert_eq!(rmf_client_can_undo(), 1);
 
-        assert_eq!(imrmf_client_undo(), 1);
-        let after = take(imrmf_client_snapshot_yaml());
+        assert_eq!(rmf_client_undo(), 1);
+        let after = take(rmf_client_snapshot_yaml());
         assert!(
             after.contains("elevation: 0"),
             "undo did not rewind: {after}"
         );
         assert_eq!(
-            imrmf_client_remote_dirty(),
+            rmf_client_remote_dirty(),
             1,
             "UI would never re-read the doc"
         );
 
-        assert_eq!(imrmf_client_redo(), 1);
-        let after = take(imrmf_client_snapshot_yaml());
+        assert_eq!(rmf_client_redo(), 1);
+        let after = take(rmf_client_snapshot_yaml());
         assert!(
             after.contains("elevation: 7"),
             "redo did not replay: {after}"
         );
 
-        imrmf_client_disconnect();
-        assert_eq!(imrmf_client_can_undo(), 0);
+        rmf_client_disconnect();
+        assert_eq!(rmf_client_can_undo(), 0);
     }
 
     // The seed is what the user just opened. If it were tracked, one undo would
@@ -654,11 +654,11 @@ mod tests {
     fn seed_is_not_undoable() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let seed = CString::new("name: seeded\nlevels:\n  L1:\n    elevation: 0\n").unwrap();
-        assert!(take(imrmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
-        assert_eq!(imrmf_client_can_undo(), 0);
-        assert_eq!(imrmf_client_undo(), 0);
-        let still = take(imrmf_client_snapshot_yaml());
+        assert!(take(rmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
+        assert_eq!(rmf_client_can_undo(), 0);
+        assert_eq!(rmf_client_undo(), 0);
+        let still = take(rmf_client_snapshot_yaml());
         assert!(still.contains("seeded"), "seed was rolled back: {still}");
-        imrmf_client_disconnect();
+        rmf_client_disconnect();
     }
 }

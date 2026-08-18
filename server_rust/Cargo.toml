@@ -1,15 +1,15 @@
 [package]
-name = "imrmf_map_editor"
+name = "rmf_map_editor"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "imrmf_map_editor"
+name = "rmf_map_editor"
 path = "src/main.rs"
 
 # Matches the bazel target name, which is what the sources import.
 [lib]
-name = "imrmf_core"
+name = "rmf_core"
 path = "src/lib.rs"
 
 [dependencies]

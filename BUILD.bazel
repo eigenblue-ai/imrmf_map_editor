@@ -5,5 +5,5 @@ package(default_visibility = ["//visibility:public"])
 sh_binary(
     name = "dev",
     srcs = ["dev.sh"],
-    data = ["//server_rust:imrmf_map_editor"],
+    data = ["//server_rust:rmf_map_editor"],
 )

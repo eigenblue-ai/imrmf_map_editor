@@ -1438,7 +1438,7 @@ void EditorView::draw(Building &building, EditorState &state,
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_undo();
 #else
-      imrmf_client_undo();
+      rmf_client_undo();
 #endif
       settle();
     };
@@ -1452,7 +1452,7 @@ void EditorView::draw(Building &building, EditorState &state,
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_redo();
 #else
-      imrmf_client_redo();
+      rmf_client_redo();
 #endif
       settle();
     };
@@ -1588,8 +1588,8 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   }
 #ifndef __EMSCRIPTEN__
   if (top_bar.has_server) {
-    const bool connected = imrmf_client_is_connected() != 0;
-    const bool ok = connected && imrmf_client_is_synced() != 0;
+    const bool connected = rmf_client_is_connected() != 0;
+    const bool ok = connected && rmf_client_is_synced() != 0;
     const ImVec4 col = ok          ? theme::palette::success
                        : connected ? theme::palette::warning
                                    : theme::palette::danger;
@@ -1640,8 +1640,8 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
     can_undo = map_editor_yjs_can_undo() != 0;
     can_redo = map_editor_yjs_can_redo() != 0;
 #else
-    can_undo = imrmf_client_can_undo() != 0;
-    can_redo = imrmf_client_can_redo() != 0;
+    can_undo = rmf_client_can_undo() != 0;
+    can_redo = rmf_client_can_redo() != 0;
 #endif
   }
   if (!can_undo)
@@ -1655,7 +1655,7 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_undo();
 #else
-      imrmf_client_undo();
+      rmf_client_undo();
 #endif
     }
 #ifndef __EMSCRIPTEN__
@@ -1679,7 +1679,7 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_redo();
 #else
-      imrmf_client_redo();
+      rmf_client_redo();
 #endif
     }
 #ifndef __EMSCRIPTEN__

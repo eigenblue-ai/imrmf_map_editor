@@ -69,7 +69,7 @@ int g_next_handle = 0;
 // of that per-pixel work runs on the render thread. The worker posts back the
 // finished RGBA buffers (plus the grayscale source for later recolor) and the
 // main thread does only the cheap GL upload.
-EM_JS(void, imrmf_canvas_fetch_worker,
+EM_JS(void, rmf_canvas_fetch_worker,
       (const char *url_c, int max_dim, int handle, int gl_id, int gl_id_inv,
        double r, double g, double b), {
         try {
@@ -119,7 +119,7 @@ self.onmessage = async (e) => {
               const pend = Module._imrmfLayerPending[d.handle];
               delete Module._imrmfLayerPending[d.handle];
               if (!d.ok || !pend) {
-                Module._imrmf_canvas_on_worker_decoded(d.handle, 0, 0, 0, 0, 0,
+                Module._rmf_canvas_on_worker_decoded(d.handle, 0, 0, 0, 0, 0,
                                                        0, 0);
                 return;
               }
@@ -148,7 +148,7 @@ self.onmessage = async (e) => {
                 grayPtr = _malloc(grayLen);
                 HEAPU8.set(new Uint8Array(d.gray), grayPtr);
               }
-              Module._imrmf_canvas_on_worker_decoded(d.handle, d.w, d.h, d.sw,
+              Module._rmf_canvas_on_worker_decoded(d.handle, d.w, d.h, d.sw,
                                                      d.sh, d.isColor ? 1 : 0,
                                                      grayPtr, grayLen);
             };
@@ -168,19 +168,19 @@ self.onmessage = async (e) => {
           });
         } catch (e) {
           console.error('[imrmf] layer worker failed:', e);
-          Module._imrmf_canvas_on_worker_decoded(handle, 0, 0, 0, 0, 0, 0, 0);
+          Module._rmf_canvas_on_worker_decoded(handle, 0, 0, 0, 0, 0, 0, 0);
         }
       });
 
 // Fast path: decode and upload straight into a GL texture, skipping the CPU
 // readback + per-pixel loops that block the main thread. Used for the
 // floorplan, which is never recolored.
-EM_JS(void, imrmf_canvas_fetch_fast,
+EM_JS(void, rmf_canvas_fetch_fast,
       (const char *url_c, int max_dim, int handle, int gl_id, int gl_id_inv), {
         const url = UTF8ToString(url_c);
         (async function() {
           const fail = () =>
-              Module._imrmf_canvas_on_fast_decoded(handle, 0, 0, 0, 0);
+              Module._rmf_canvas_on_fast_decoded(handle, 0, 0, 0, 0);
           try {
             const r = await fetch(url);
             if (!r.ok) { fail(); return; }
@@ -223,7 +223,7 @@ EM_JS(void, imrmf_canvas_fetch_fast,
             }
             gl.bindTexture(gl.TEXTURE_2D, prev || null);
             bitmap.close();
-            Module._imrmf_canvas_on_fast_decoded(handle, w, h, sw, sh);
+            Module._rmf_canvas_on_fast_decoded(handle, w, h, sw, sh);
           } catch (e) {
             console.error('[imrmf] fast decode failed:', e);
             fail();
@@ -240,9 +240,8 @@ std::unordered_map<int, LayerTexture *> g_fast_pending;
 // Worker already uploaded the textures into out.id / out.id_inv. We only record
 // the dimensions, keep the grayscale source for later recolor, and flip status.
 extern "C" EMSCRIPTEN_KEEPALIVE void
-imrmf_canvas_on_worker_decoded(int handle, int w, int h, int orig_w, int orig_h,
-                               int is_color, unsigned char *gray,
-                               int gray_len) {
+rmf_canvas_on_worker_decoded(int handle, int w, int h, int orig_w, int orig_h,
+                             int is_color, unsigned char *gray, int gray_len) {
   auto it = g_worker_pending.find(handle);
   if (it == g_worker_pending.end()) {
     if (gray)
@@ -274,7 +273,7 @@ imrmf_canvas_on_worker_decoded(int handle, int w, int h, int orig_w, int orig_h,
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void
-imrmf_canvas_on_fast_decoded(int handle, int w, int h, int orig_w, int orig_h) {
+rmf_canvas_on_fast_decoded(int handle, int w, int h, int orig_w, int orig_h) {
   auto it = g_fast_pending.find(handle);
   if (it == g_fast_pending.end())
     return;
@@ -349,16 +348,16 @@ void HttpTextureProvider::trigger_load(LayerTexture &out,
     out.id_inv = alloc_gl_texture();
     int handle = ++g_next_handle;
     g_fast_pending[handle] = &out;
-    imrmf_canvas_fetch_fast(url.c_str(), 2048, handle, (int)out.id,
-                            (int)out.id_inv);
+    rmf_canvas_fetch_fast(url.c_str(), 2048, handle, (int)out.id,
+                          (int)out.id_inv);
     return;
   }
   out.id = alloc_gl_texture();
   out.id_inv = alloc_gl_texture();
   int handle = ++g_next_handle;
   g_worker_pending[handle] = {&out, tr, tg, tb};
-  imrmf_canvas_fetch_worker(url.c_str(), 2048, handle, (int)out.id,
-                            (int)out.id_inv, tr, tg, tb);
+  rmf_canvas_fetch_worker(url.c_str(), 2048, handle, (int)out.id,
+                          (int)out.id_inv, tr, tg, tb);
 #else
   // A blocking fetch here froze the window for the whole request, which is why
   // the first switch to a floor took seconds against a remote server.

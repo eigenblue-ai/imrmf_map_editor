@@ -13,8 +13,8 @@ use yrs::{Doc, ReadTxn, Transact};
 
 use crate::storage::{MountConfig, MountInfo, SnapshotInfo, Storage};
 use crate::validate::Validator;
-use imrmf_core::sync;
-use imrmf_core::yaml_bridge;
+use rmf_core::sync;
+use rmf_core::yaml_bridge;
 
 pub struct AppState {
     pub doc: Doc,

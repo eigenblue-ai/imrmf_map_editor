@@ -42,7 +42,7 @@ impl S3Storage {
             &cfg.secret_access_key,
             cfg.session_token.clone(),
             None,
-            "imrmf_map_editor",
+            "rmf_map_editor",
         );
         let mut loader = aws_config::defaults(BehaviorVersion::latest())
             .region(region)

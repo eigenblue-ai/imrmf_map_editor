@@ -611,7 +611,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "imrmf_map_editor"
+name = "rmf_map_editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",

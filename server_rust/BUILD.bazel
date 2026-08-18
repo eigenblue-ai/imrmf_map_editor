@@ -10,7 +10,7 @@ rust_library(
         "src/sync.rs",
         "src/yaml_bridge.rs",
     ],
-    crate_name = "imrmf_core",
+    crate_name = "rmf_core",
     crate_root = "src/lib.rs",
     edition = "2021",
     deps = [
@@ -64,7 +64,7 @@ _SERVER_DEPS = [
 _SERVER_PROC_MACRO_DEPS = ["@crates//:async-trait"]
 
 rust_binary(
-    name = "imrmf_map_editor",
+    name = "rmf_map_editor",
     srcs = _SERVER_SRCS,
     data = ["@rmf_building_map_tools//:building_map_generator_bin"] + select({
         "//config:no_ros2": [],

@@ -12,8 +12,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 WORKDIR /opt/imrmf
 
-COPY dist/server_rust/imrmf_map_editor          /opt/imrmf/imrmf_map_editor
-COPY dist/server_rust/imrmf_map_editor.runfiles /opt/imrmf/imrmf_map_editor.runfiles
+COPY dist/server_rust/rmf_map_editor          /opt/imrmf/rmf_map_editor
+COPY dist/server_rust/rmf_map_editor.runfiles /opt/imrmf/rmf_map_editor.runfiles
 
 COPY dist/app/editor_wasm /opt/imrmf/www
 
@@ -23,12 +23,12 @@ COPY LICENSE NOTICE THIRD_PARTY_LICENSES.md /opt/imrmf/licenses/
 COPY ui/fonts/OFL.txt ui/fonts/MDI-LICENSE /opt/imrmf/licenses/
 
 COPY docker_entrypoint.sh /opt/imrmf/entrypoint.sh
-RUN chmod +x /opt/imrmf/entrypoint.sh /opt/imrmf/imrmf_map_editor
+RUN chmod +x /opt/imrmf/entrypoint.sh /opt/imrmf/rmf_map_editor
 
-ENV IMRMF_CACHE_ROOT=/var/imrmf/cache \
-    IMRMF_PORT=30010 \
-    IMRMF_WASM_DIR=/opt/imrmf/www \
-    IMRMF_EDITOR_BIN=/opt/imrmf/imrmf_map_editor
+ENV RMF_CACHE_ROOT=/var/imrmf/cache \
+    RMF_PORT=30010 \
+    RMF_WASM_DIR=/opt/imrmf/www \
+    RMF_EDITOR_BIN=/opt/imrmf/rmf_map_editor
 
 EXPOSE 30010
 

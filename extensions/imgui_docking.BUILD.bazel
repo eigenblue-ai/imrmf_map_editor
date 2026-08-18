@@ -22,7 +22,7 @@ cc_library(
         "imgui_internal.h",
     ],
     copts = select({
-        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "@rmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
         "//conditions:default": [],
     }),
     # MDI icon glyphs live above U+FFFF, so ImWchar must be 32-bit. This
@@ -39,7 +39,7 @@ cc_library(
     srcs = ["misc/cpp/imgui_stdlib.cpp"],
     hdrs = ["misc/cpp/imgui_stdlib.h"],
     copts = select({
-        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "@rmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
         "//conditions:default": [],
     }),
     include_prefix = "imgui",
@@ -52,7 +52,7 @@ cc_library(
     srcs = ["backends/imgui_impl_glfw.cpp"],
     hdrs = ["backends/imgui_impl_glfw.h"],
     copts = select({
-        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "@rmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
         "//conditions:default": [],
     }),
     include_prefix = "imgui",
@@ -60,7 +60,7 @@ cc_library(
     deps = [
         ":imgui",
     ] + select({
-        "@imrmf_map_editor//config:wasm": [],
+        "@rmf_map_editor//config:wasm": [],
         "//conditions:default": ["@glfw"],
     }),
 )
@@ -73,7 +73,7 @@ cc_library(
         "backends/imgui_impl_opengl3_loader.h",
     ],
     copts = select({
-        "@imrmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
+        "@rmf_map_editor//config:wasm": ["-DImDrawIdx=unsigned"],
         "//conditions:default": [],
     }),
     include_prefix = "imgui",

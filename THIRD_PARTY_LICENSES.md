@@ -14,7 +14,7 @@ Three artifacts are distributed:
 - `//app:editor`, the desktop application.
 - `//app:editor_wasm`, the browser application. Its `.data` file has the two
   fonts preloaded into it.
-- `//server_rust:imrmf_map_editor` and its runfiles, which is what the container
+- `//server_rust:rmf_map_editor` and its runfiles, which is what the container
   image built from `Dockerfile` holds.
 
 ## Copied into this source tree
