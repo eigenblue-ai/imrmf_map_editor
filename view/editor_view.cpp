@@ -571,6 +571,11 @@ void init_default_lane_params(Lane &l) {
   need("demo_mock_lift_name", ParamValue::make_string(""));
 }
 
+struct LaneSplit {
+  int lane_idx = -1;
+  double x = 0.0, y = 0.0;
+};
+
 // Strict interior segment-segment intersection. Tangents and endpoints don't
 // count so a dissection drag can't split itself.
 bool segment_intersect(double ax, double ay, double bx, double by, double cx,
@@ -589,6 +594,52 @@ bool segment_intersect(double ax, double ay, double bx, double by, double cx,
   ix = ax + t * rx;
   iy = ay + t * ry;
   return true;
+}
+
+// Where a lane being drawn meets an existing one, so where that one splits.
+// Shift keeps the drawn heading and takes the crossing, otherwise the cursor
+// drops onto the lane. Never near an end, which would leave a zero-length lane.
+LaneSplit lane_split_at(const Level &level, int lane_idx, int anchor_idx,
+                        double wx, double wy, bool shift) {
+  LaneSplit out;
+  if (lane_idx < 0 || lane_idx >= (int)level.lanes.size())
+    return out;
+  const Lane &ln = level.lanes[lane_idx];
+  if (ln.start_idx < 0 || ln.start_idx >= (int)level.vertices.size() ||
+      ln.end_idx < 0 || ln.end_idx >= (int)level.vertices.size())
+    return out;
+  const Vertex &va = level.vertices[ln.start_idx];
+  const Vertex &vb = level.vertices[ln.end_idx];
+  const double ex = vb.x - va.x, ey = vb.y - va.y;
+  const double len2 = ex * ex + ey * ey;
+  if (len2 < 1e-12)
+    return out;
+
+  double px = wx, py = wy;
+  if (shift && anchor_idx >= 0 && anchor_idx < (int)level.vertices.size()) {
+    const Vertex &sv = level.vertices[anchor_idx];
+    auto [dx, dy] = snap_axis_or_diagonal(wx - sv.x, wy - sv.y);
+    const double dlen = std::sqrt(dx * dx + dy * dy);
+    if (dlen < 1e-9)
+      return out;
+    // Long enough to reach the lane wherever it is.
+    const double reach = std::sqrt(len2) * 1000.0;
+    double ix = 0, iy = 0;
+    if (!segment_intersect(sv.x, sv.y, sv.x + dx / dlen * reach,
+                           sv.y + dy / dlen * reach, va.x, va.y, vb.x, vb.y, ix,
+                           iy))
+      return out;
+    px = ix;
+    py = iy;
+  }
+
+  const double t = ((px - va.x) * ex + (py - va.y) * ey) / len2;
+  if (t <= 1e-6 || t >= 1.0 - 1e-6)
+    return out;
+  out.lane_idx = lane_idx;
+  out.x = va.x + ex * t;
+  out.y = va.y + ey * t;
+  return out;
 }
 
 std::string get_mutex(const std::map<std::string, ParamValue> &p) {
@@ -2252,13 +2303,32 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       dl->AddCircle(p, 9.5f, IM_COL32(80, 170, 255, 255), 0, 2.5f);
     }
     ImVec2 ghost = mouse;
+    const bool lane_shift = ImGui::GetIO().KeyShift;
     if (state.mode == Mode::Lane && hv < 0 && state.pending_lane_start >= 0 &&
-        state.pending_lane_start < (int)level.vertices.size() &&
-        ImGui::GetIO().KeyShift) {
+        state.pending_lane_start < (int)level.vertices.size() && lane_shift) {
       const Vertex &sv = level.vertices[state.pending_lane_start];
       auto [wx, wy] = canvas_.screen_to_world(mouse);
       auto [sdx, sdy] = snap_axis_or_diagonal(wx - sv.x, wy - sv.y);
       ghost = canvas_.world_to_screen(sv.x + sdx, sv.y + sdy);
+    }
+    LaneSplit split;
+    if (state.mode == Mode::Lane && hv < 0 && state.pending_lane_start >= 0 &&
+        state.pending_lane_start < (int)level.vertices.size()) {
+      auto [wx, wy] = canvas_.screen_to_world(mouse);
+      split = lane_split_at(level, hit_lane(mouse), state.pending_lane_start,
+                            wx, wy, lane_shift);
+    }
+    if (split.lane_idx >= 0) {
+      const Lane &hovered = level.lanes[split.lane_idx];
+      ImVec2 la = canvas_.world_to_screen(level.vertices[hovered.start_idx].x,
+                                          level.vertices[hovered.start_idx].y);
+      ImVec2 lb = canvas_.world_to_screen(level.vertices[hovered.end_idx].x,
+                                          level.vertices[hovered.end_idx].y);
+      ghost = canvas_.world_to_screen(split.x, split.y);
+      dl->AddLine(la, lb, IM_COL32(255, 200, 80, 150), 4.0f);
+      dl->AddCircle(ghost, 7.0f, IM_COL32(255, 200, 80, 255), 0, 2.0f);
+      dl->AddText(ImVec2(ghost.x + 12.0f, ghost.y - 20.0f),
+                  IM_COL32(255, 200, 80, 230), "split here");
     }
     if (state.mode == Mode::Lane && state.pending_lane_start >= 0 &&
         state.pending_lane_start < (int)level.vertices.size()) {
@@ -2270,7 +2340,7 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
                            : ghost;
       dl->AddLine(a, b, IM_COL32(140, 220, 140, 130), 3.0f);
     }
-    if (hv < 0) {
+    if (hv < 0 && split.lane_idx < 0) {
       dl->AddCircleFilled(ghost, 4.5f, IM_COL32(230, 230, 230, 110));
     }
     ImGui::SetMouseCursor(ImGuiMouseCursor_None);
@@ -2647,8 +2717,33 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
           state.selected_vertices = {vi};
           state.selected_lanes.clear();
         };
+        LaneSplit split_r;
+        if (lidx_r >= 0 && state.pending_lane_start >= 0 && vidx_r < 0) {
+          split_r = lane_split_at(level, lidx_r, state.pending_lane_start,
+                                  s_drag_start_world_x, s_drag_start_world_y,
+                                  ImGui::GetIO().KeyShift);
+        }
         if (vidx_r >= 0) {
           extend_chain(vidx_r);
+        } else if (split_r.lane_idx >= 0) {
+          const Lane orig = level.lanes[split_r.lane_idx];
+          Vertex nv;
+          nv.x = split_r.x;
+          nv.y = split_r.y;
+          yjs_op_vertex_add(level.name, nv);
+          level.vertices.push_back(nv);
+          const int new_vi = (int)level.vertices.size() - 1;
+          yjs_op_lane_delete(level.name, split_r.lane_idx);
+          delete_lane(level, split_r.lane_idx);
+          Lane head = orig;
+          head.end_idx = new_vi;
+          yjs_op_lane_add(level.name, head);
+          level.lanes.push_back(head);
+          Lane tail = orig;
+          tail.start_idx = new_vi;
+          yjs_op_lane_add(level.name, tail);
+          level.lanes.push_back(tail);
+          extend_chain(new_vi);
         } else if (lidx_r >= 0 && state.pending_lane_start < 0) {
           state.selected_lanes = {lidx_r};
           state.selected_vertices.clear();
@@ -3785,6 +3880,9 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
   if (!ImGui::CollapsingHeader("Properties", ImGuiTreeNodeFlags_DefaultOpen))
     return;
 
+  // Indices repeat across floors, so the level belongs in the id too.
+  ImGui::PushID(level.name.c_str());
+
   bool emitted = false;
   if (state.selected_vertices.size() > 1) {
     std::vector<int> sel;
@@ -3813,6 +3911,9 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     emitted = true;
   } else if (single_vertex >= 0) {
     int vi = single_vertex;
+    // Scope every widget below to this object. ImGui keys an in-flight edit by
+    // widget id, so a shared id hands the half-typed value to the next pick.
+    ImGui::PushID(vi);
     Vertex &v = level.vertices[vi];
     ImGui::Text("Vertex #%d", vi);
     ImGui::Separator();
@@ -3865,10 +3966,12 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       state.pending_commit_vertex = -1;
       state.pending_commit_time = 0.0;
     }
+    ImGui::PopID();
     emitted = true;
   }
 
   if (single_lane >= 0) {
+    ImGui::PushID(0x10000 + single_lane);
     if (emitted)
       ImGui::Separator();
     Lane &l = level.lanes[single_lane];
@@ -3896,6 +3999,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       state.pending_commit_lane = -1;
       state.pending_commit_time = 0.0;
     }
+    ImGui::PopID();
     emitted = true;
   } else if (state.selected_lanes.size() >= 2) {
     std::vector<int> sel;
@@ -3934,6 +4038,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       state.selected_walls[0] >= 0 &&
       state.selected_walls[0] < (int)level.walls.size()) {
     int wi = state.selected_walls[0];
+    ImGui::PushID(0x20000 + wi);
     Wall &w = level.walls[wi];
     ImGui::Text("Wall #%d  (%d -> %d)", wi, w.start_idx, w.end_idx);
     ImGui::Separator();
@@ -3943,6 +4048,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       draw_param_editor(w.params, spec.key, spec.type, d, c);
     if (c)
       yjs_op_wall_replace(level.name, wi, w);
+    ImGui::PopID();
     emitted = true;
   }
 
@@ -3950,6 +4056,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       state.selected_doors[0] >= 0 &&
       state.selected_doors[0] < (int)level.doors.size()) {
     int di = state.selected_doors[0];
+    ImGui::PushID(0x30000 + di);
     Door &dr = level.doors[di];
     ImGui::Text("Door #%d  (%d -> %d)", di, dr.start_idx, dr.end_idx);
     ImGui::Separator();
@@ -3993,6 +4100,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       draw_param_editor(dr.params, spec.key, spec.type, d, c);
     if (c)
       yjs_op_door_replace(level.name, di, dr);
+    ImGui::PopID();
     emitted = true;
   }
 
@@ -4000,6 +4108,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
       state.selected_measurements[0] >= 0 &&
       state.selected_measurements[0] < (int)level.measurements.size()) {
     int mi = state.selected_measurements[0];
+    ImGui::PushID(0x40000 + mi);
     Measurement &m = level.measurements[mi];
     ImGui::Text("Measurement #%d  (%d -> %d)", mi, m.start_idx, m.end_idx);
     ImGui::Separator();
@@ -4011,6 +4120,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
     double mpp = compute_level_mpp(building, state.level_idx);
     if (mpp > 0.0)
       ImGui::TextDisabled("level scale: %.5f m/px", mpp);
+    ImGui::PopID();
     emitted = true;
   }
 
@@ -4034,6 +4144,7 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
   if (!emitted) {
     ImGui::TextDisabled("No selection.");
   }
+  ImGui::PopID();
 }
 
 void EditorView::draw_status_bar(const EditorState &state) {

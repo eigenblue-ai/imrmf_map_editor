@@ -5,6 +5,8 @@ talks Yjs over WebSocket to a Rust server that hosts the CRDT and flushes
 `building.yaml` to disk or S3. It builds two ways from the same sources: a wasm
 app for the browser, and a desktop app for macOS and Linux.
 
+![The editor on an S3-backed warehouse map](docs/assets/rmf-map-editor.png)
+
 ## Features
 
 - Browser and desktop from one codebase, sharing the editor, the UI kit, and
