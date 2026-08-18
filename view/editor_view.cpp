@@ -70,7 +70,9 @@ struct LaneParamSpec {
 const std::array<LaneParamSpec, 7> kLaneParams = {{
     {"bidirectional", ParamType::BOOL},
     {"orientation", ParamType::STRING},
-    {"graph_idx", ParamType::INT, true},
+    // Not optional: generate_nav_graph indexes graph_idx bare where it guards
+    // every other param, so a lane without it fails the whole map load.
+    {"graph_idx", ParamType::INT},
     {"speed_limit", ParamType::DOUBLE, true},
     {"mutex", ParamType::STRING},
     {"demo_mock_floor_name", ParamType::STRING},
@@ -562,7 +564,8 @@ void init_default_lane_params(Lane &l) {
   };
   need("bidirectional", ParamValue::make_bool(true));
   need("orientation", ParamValue::make_string(""));
-  // graph_idx/speed_limit stay optional (absent = RMF default), no 0 per lane.
+  // speed_limit stays out: absent there really does mean unset, not 0.
+  need("graph_idx", ParamValue::make_int(0));
   need("mutex", ParamValue::make_string(""));
   need("demo_mock_floor_name", ParamValue::make_string(""));
   need("demo_mock_lift_name", ParamValue::make_string(""));
@@ -2685,6 +2688,18 @@ std::string default_layer_path(const std::string &level_name,
   return layer_folder(level_name) + "/" + file;
 }
 
+bool branch_name_is_valid(const std::string &name) {
+  if (name.empty() || name.size() > 64)
+    return false;
+  for (unsigned char c : name) {
+    const bool okay = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-';
+    if (!okay)
+      return false;
+  }
+  return true;
+}
+
 bool under_layers_folder(const std::string &path) {
   return path.rfind("layers/", 0) == 0;
 }
@@ -4688,6 +4703,33 @@ void EditorView::draw_version_strip(EditorState &state,
     ImGui::TextDisabled("%s", state.snapshot_status.c_str());
   }
 
+  // Deploying into an unused name is how a branch comes into being.
+  auto new_branch_row = [&state](const std::function<void()> &deploy) {
+    ImGui::Separator();
+    ImGui::TextDisabled("Or a new branch:");
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputText("##new_branch", &state.deploy_new_branch);
+    const bool named = !state.deploy_new_branch.empty();
+    const bool valid = branch_name_is_valid(state.deploy_new_branch);
+    const bool fresh =
+        state.deploy_new_branch != state.branch &&
+        std::find(state.branches.begin(), state.branches.end(),
+                  state.deploy_new_branch) == state.branches.end();
+    if (named && !valid) {
+      ImGui::TextColored(theme::palette::danger,
+                         "letters, digits, - and _ only");
+    } else if (named && !fresh) {
+      ImGui::TextDisabled("that one already exists, pick it above");
+    }
+    ImGui::BeginDisabled(!named || !valid || !fresh);
+    if (ImGui::Button("Create and deploy")) {
+      deploy();
+      state.deploy_new_branch.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+  };
+
   if (on_snapshot) {
     ImGui::SameLine();
     if (ImGui::Button("Deploy to..."))
@@ -4708,6 +4750,10 @@ void EditorView::draw_version_strip(EditorState &state,
       }
       if (!any)
         ImGui::TextDisabled("(no other branches)");
+      new_branch_row([&state]() {
+        state.deploy_request_dir = state.snapshot_dir;
+        state.deploy_request_to = state.deploy_new_branch;
+      });
       ImGui::Separator();
       if (ImGui::SmallButton("Refresh##branches"))
         state.branch_request_refresh = true;
@@ -4732,6 +4778,8 @@ void EditorView::draw_version_strip(EditorState &state,
       }
       if (!any)
         ImGui::TextDisabled("(no other branches)");
+      new_branch_row(
+          [&state]() { state.deploy_latest_to = state.deploy_new_branch; });
       ImGui::Separator();
       if (ImGui::SmallButton("Refresh##branches_latest"))
         state.branch_request_refresh = true;

@@ -110,6 +110,11 @@ bool building_id_is_valid(const std::string &id) {
   return true;
 }
 
+// Outside this set sanitize_branch rewrites it, and you cannot name it back.
+bool branch_name_is_valid(const std::string &name) {
+  return name.empty() || building_id_is_valid(name);
+}
+
 // A map picked off disk, ready to push. Never the file's own bytes: the yaml is
 // re-serialized from what the parser accepted.
 struct MapSource {
@@ -230,6 +235,7 @@ struct ConnectionForm {
   char s3_bucket[128] = "";
   char s3_prefix[128] = "";
   char s3_region[64] = "us-east-1";
+  char s3_branch[64] = "main";
   char s3_access[128] = "";
   char s3_secret[256] = "";
   char s3_endpoint[256] = "";
@@ -239,6 +245,12 @@ struct ConnectionForm {
 ConnPhase g_phase = ConnPhase::BootingConfig;
 ConnectionForm g_form;
 std::vector<std::string> g_buildings;
+// A mount answers with buildings only, so the branch comes from what we asked.
+void note_mounted_branch() {
+  if (g_form.kind_idx == 1 && g_form.s3_branch[0])
+    g_state.branch = g_form.s3_branch;
+}
+
 // Attached, which is not the same as holding anything. Read off the building
 // list, an empty backend looked unmounted and could never be filled.
 bool g_backend_mounted = false;
@@ -1118,6 +1130,7 @@ void poll_branch_result() {
     }
   } else if (code == "deployed") {
     g_state.deploy_status = payload.empty() ? "deployed" : payload;
+    g_branches_dirty = true;
   } else if (code == "err") {
     g_state.deploy_status = "error: " + payload;
   }
@@ -1153,6 +1166,7 @@ std::string build_mount_json(const ConnectionForm &f) {
   j += ",\"bucket\":\"" + esc(f.s3_bucket) + "\"";
   j += ",\"prefix\":\"" + esc(f.s3_prefix) + "\"";
   j += ",\"region\":\"" + esc(f.s3_region) + "\"";
+  j += ",\"branch\":\"" + esc(f.s3_branch) + "\"";
   // An untouched mask submits empty, and the server reuses its own value.
   j += ",\"access_key_id\":\"" +
        (f.s3_access_is_server_held ? std::string() : esc(f.s3_access)) + "\"";
@@ -1209,7 +1223,10 @@ bool json_bool_field(const std::string &src, const std::string &key) {
 void apply_server_config(const std::string &payload) {
   g_locked = json_bool_field(payload, "locked");
   g_state.branch = json_string_field(payload, "branch");
-  const std::string backend = json_string_field(payload, "backend");
+  // A backend mounted at runtime reports under "mount", not "backend".
+  std::string backend = json_string_field(payload, "backend");
+  if (backend.empty())
+    backend = json_string_field(payload, "kind");
   if (backend == "s3")
     g_form.kind_idx = 1;
   else if (backend == "local")
@@ -1219,6 +1236,7 @@ void apply_server_config(const std::string &payload) {
     set_field(g_form.s3_bucket, json_string_field(payload, "bucket"));
     set_field(g_form.s3_prefix, json_string_field(payload, "prefix"));
     set_field(g_form.s3_region, json_string_field(payload, "region"));
+    set_field(g_form.s3_branch, json_string_field(payload, "branch"));
     set_field(g_form.s3_endpoint, json_string_field(payload, "endpoint_url"));
     // Both submit empty, which the server reads as "reuse what you have".
     g_server_has_s3_secret = json_bool_field(payload, "has_secret_access_key");
@@ -1526,6 +1544,8 @@ void poll_async_result() {
   } else if (g_phase == ConnPhase::Mounting) {
     parse_buildings_payload(payload);
     g_backend_mounted = true;
+    note_mounted_branch();
+    g_branches_dirty = true;
     if (g_buildings.empty()) {
       // Nothing to open is not an error, it is a new backend.
       g_error_message.clear();
@@ -1720,6 +1740,9 @@ void take_building_ids(const std::string &payload) {
     start = nl + 1;
   }
   g_backend_mounted = true;
+  note_mounted_branch();
+  if (g_form.kind_idx == 1 && g_form.s3_branch[0] == '\0')
+    native_probe_server_config();
   if (g_buildings.empty()) {
     g_error_message.clear();
     g_phase = ConnPhase::Mounted;
@@ -1768,7 +1791,10 @@ void start_load_building() {
   g_bundle_blobs.reset();
   g_serverless_session = false;
   g_bundle_session = false;
+  // The branch belongs to the connection, not to the map being opened.
+  const std::string branch = g_state.branch;
   g_state = {};
+  g_state.branch = branch;
   g_view = std::make_unique<EditorView>(make_server_texture_provider(),
                                         g_building_id);
   g_error_message.clear();
@@ -2740,6 +2766,8 @@ void draw_open_dialog_body() {
              0},
             {"Region", "##region", g_form.s3_region, sizeof(g_form.s3_region),
              0},
+            {"Default branch", "##branch", g_form.s3_branch,
+             sizeof(g_form.s3_branch), 0},
             {"Access key id", "##access", g_form.s3_access,
              sizeof(g_form.s3_access), 0},
             {"Secret access key", "##secret", g_form.s3_secret,
@@ -2764,6 +2792,14 @@ void draw_open_dialog_body() {
           if (held && *held && ImGui::IsItemActivated()) {
             *held = false;
             f.buffer[0] = '\0';
+          }
+          if (f.buffer == g_form.s3_branch) {
+            if (!branch_name_is_valid(g_form.s3_branch)) {
+              ImGui::TextColored(theme::palette::danger,
+                                 "letters, digits, - and _ only");
+            } else if (g_form.s3_branch[0] == '\0') {
+              ImGui::TextDisabled("empty keeps the server's current branch");
+            }
           }
         }
         if (g_server_has_s3_secret || g_server_has_s3_access) {
@@ -2961,7 +2997,8 @@ void draw_open_dialog_body() {
   } else if (!g_locked && !mounted) {
     ready = os_picker ||
             (local ? g_form.local_path[0] != '\0'
-                   : g_form.s3_bucket[0] && g_form.s3_region[0] &&
+                   : branch_name_is_valid(g_form.s3_branch) &&
+                         g_form.s3_bucket[0] && g_form.s3_region[0] &&
                          (g_form.s3_access[0] || g_server_has_s3_access) &&
                          (g_form.s3_secret[0] || g_server_has_s3_secret));
   }

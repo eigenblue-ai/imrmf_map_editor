@@ -153,6 +153,7 @@ struct EditorState {
   std::string deploy_request_dir;
   std::string deploy_request_to;
   std::string deploy_latest_to;
+  std::string deploy_new_branch;
   std::string deploy_status;
 };
 
