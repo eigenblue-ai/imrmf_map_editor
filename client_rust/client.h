@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,8 +21,14 @@ char *imrmf_client_mount(const char *server_url, const char *config_json);
 char *imrmf_client_load_building(const char *server_url, const char *id);
 char *imrmf_client_put_building(const char *server_url, const char *id,
                                 const char *yaml);
+// One image, by the yaml-relative path the map refers to it by.
+char *imrmf_client_put_asset(const char *server_url, const char *id,
+                             const char *path, const unsigned char *data,
+                             size_t len);
 
 char *imrmf_client_connect(const char *ws_url);
+// A doc with no server behind it, so a map opened from a file still has undo.
+char *imrmf_client_start_local_session(const char *yaml);
 void imrmf_client_disconnect(void);
 int imrmf_client_is_connected(void);
 int imrmf_client_is_synced(void);

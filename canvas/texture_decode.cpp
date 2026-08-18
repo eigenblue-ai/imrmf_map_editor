@@ -94,8 +94,9 @@ void regenerate_colorize(LayerTexture &tex, double cr, double cg, double cb) {
   tex.last_color_b = cb;
 }
 
-void decode_into_texture(LayerTexture &out, const unsigned char *bytes,
-                         std::size_t len, double tr, double tg, double tb) {
+DecodedPixels decode_pixels(const unsigned char *bytes, std::size_t len,
+                            double tr, double tg, double tb) {
+  DecodedPixels px;
   int w = 0, h = 0, n = 0;
   unsigned char *rgba =
       bytes && len ? stbi_load_from_memory(bytes, (int)len, &w, &h, &n, 4)
@@ -103,38 +104,56 @@ void decode_into_texture(LayerTexture &out, const unsigned char *bytes,
   if (!rgba || w <= 0 || h <= 0) {
     if (rgba)
       stbi_image_free(rgba);
-    out.status = LoadStatus::Failed;
-    return;
+    return px;
   }
-  out.width = w;
-  out.height = h;
-  out.orig_width = w;
-  out.orig_height = h;
-  out.is_color = detect_color(rgba, w, h);
+  px.width = w;
+  px.height = h;
+  px.is_color = detect_color(rgba, w, h);
 
-  if (out.is_color) {
-    out.id = upload_rgba(rgba, w, h);
-    std::vector<unsigned char> inv(rgba, rgba + (size_t)w * h * 4);
-    invert_rgb(inv, w, h);
-    out.id_inv = upload_rgba(inv.data(), w, h);
+  if (px.is_color) {
+    px.rgba.assign(rgba, rgba + (size_t)w * h * 4);
   } else {
-    out.grayscale.assign((size_t)w * h, 0);
+    px.grayscale.assign((size_t)w * h, 0);
     for (int i = 0; i < w * h; ++i) {
-      out.grayscale[i] =
+      px.grayscale[i] =
           (unsigned char)((rgba[i * 4] + rgba[i * 4 + 1] + rgba[i * 4 + 2]) /
                           3);
     }
-    auto colored = colorize_rgba(out.grayscale.data(), w, h, tr, tg, tb);
-    out.id = upload_rgba(colored.data(), w, h);
-    auto inv = colored;
-    invert_rgb(inv, w, h);
-    out.id_inv = upload_rgba(inv.data(), w, h);
+    px.rgba = colorize_rgba(px.grayscale.data(), w, h, tr, tg, tb);
+  }
+  stbi_image_free(rgba);
+
+  px.rgba_inv = px.rgba;
+  invert_rgb(px.rgba_inv, w, h);
+  px.ok = true;
+  return px;
+}
+
+void upload_decoded(LayerTexture &out, const DecodedPixels &px) {
+  if (!px.ok) {
+    out.status = LoadStatus::Failed;
+    return;
+  }
+  out.width = px.width;
+  out.height = px.height;
+  out.orig_width = px.width;
+  out.orig_height = px.height;
+  out.is_color = px.is_color;
+  out.grayscale = px.grayscale;
+  out.id = upload_rgba(px.rgba.data(), px.width, px.height);
+  out.id_inv = upload_rgba(px.rgba_inv.data(), px.width, px.height);
+  out.status = LoadStatus::Ok;
+}
+
+void decode_into_texture(LayerTexture &out, const unsigned char *bytes,
+                         std::size_t len, double tr, double tg, double tb) {
+  const DecodedPixels px = decode_pixels(bytes, len, tr, tg, tb);
+  upload_decoded(out, px);
+  if (px.ok && !px.is_color) {
     out.last_color_r = tr;
     out.last_color_g = tg;
     out.last_color_b = tb;
   }
-  stbi_image_free(rgba);
-  out.status = LoadStatus::Ok;
 }
 
 } // namespace imrmf::map_editor::canvas

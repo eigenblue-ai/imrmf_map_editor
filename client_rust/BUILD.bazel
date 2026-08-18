@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_static_library")
+load("@rules_rust//rust:defs.bzl", "rust_static_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -17,6 +17,11 @@ rust_static_library(
         "@crates//:ureq",
         "@crates//:yrs",
     ],
+)
+
+rust_test(
+    name = "client_test",
+    crate = ":client",
 )
 
 cc_library(

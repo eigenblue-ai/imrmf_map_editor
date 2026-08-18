@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -15,12 +15,14 @@ cc_library(
         "overlays.cpp",
         "stb_image.h",
         "texture_decode.cpp",
+        "texture_loader.cpp",
     ],
     hdrs = [
         "canvas.hpp",
         "gl.hpp",
         "overlays.hpp",
         "texture_decode.hpp",
+        "texture_loader.hpp",
     ],
     linkopts = _GL_LINKOPTS,
     strip_include_prefix = "/",
@@ -52,5 +54,16 @@ cc_library(
     hdrs = ["stb_texture_provider.hpp"],
     linkopts = _GL_LINKOPTS,
     strip_include_prefix = "/",
+    deps = [":canvas"],
+)
+
+# Native only: the browser loads through a JS worker instead.
+cc_test(
+    name = "texture_loader_test",
+    srcs = ["texture_loader_test.cpp"],
+    target_compatible_with = select({
+        "//config:wasm": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
     deps = [":canvas"],
 )

@@ -17,14 +17,18 @@ namespace imrmf::map_editor {
 //
 //   manifest.json          format / version / yaml name / path -> entry table
 //   <id>.building.yaml     byte-identical to serialize_building()
-//   assets/...             one entry per referenced image
+//   layers/<level>/x.png   every image at the path the yaml names it by
 //
-// The yaml carries no bundle-only keys, so an unzipped bundle is an ordinary
-// map directory.
+// That is the shape a backend keeps a building in, so a bundle unzips into a
+// folder identical to the bucket's <id>/ (minus snapshots), and a zipped
+// building folder opens as a bundle even with no manifest.json in it.
+//
+// Version 1 put images under assets/. Those still open, since the manifest
+// records where each one lives.
 
 inline constexpr const char *kBundleExtension = ".rmfmap";
 inline constexpr const char *kBundleFormat = "rmfmap";
-inline constexpr int kBundleVersion = 1;
+inline constexpr int kBundleVersion = 2;
 
 class BundleError : public std::runtime_error {
 public:

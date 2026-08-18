@@ -4,6 +4,9 @@
 #pragma once
 
 #include "canvas/canvas.hpp"
+#ifndef __EMSCRIPTEN__
+#include "canvas/texture_loader.hpp"
+#endif
 
 #include <functional>
 #include <string>
@@ -28,6 +31,20 @@ public:
   // browser behaviour.
   void set_base_url(std::string base);
 
+  // Which building read_asset should ask for. The canvas passes an id per draw
+  // call, but a bundle pack has no draw to piggyback on.
+  void set_asset_id(std::string id) { asset_id_ = std::move(id); }
+
+#ifndef __EMSCRIPTEN__
+  void pump() override;
+
+  // Blocking GET of the same route the textures come from. The browser has JS
+  // for this. Without it a desktop client cannot pack a server's images into a
+  // bundle, since every other source of bytes is local.
+  bool read_asset(const std::string &asset_path,
+                  std::vector<unsigned char> *out) const override;
+#endif
+
 protected:
   void trigger_load(LayerTexture &out, const std::string &cache_key,
                     const std::string &asset_id, const std::string &asset_path,
@@ -36,6 +53,10 @@ protected:
 private:
   UrlBuilder url_builder_;
   std::string base_url_;
+  std::string asset_id_;
+#ifndef __EMSCRIPTEN__
+  AsyncTextureLoader loader_;
+#endif
 };
 
 } // namespace imrmf::map_editor::canvas

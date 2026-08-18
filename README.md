@@ -135,17 +135,31 @@ keys at a host of their choosing.
 
 ## Map bundles (`.rmfmap`)
 
-A `.rmfmap` file is a plain zip holding a whole map:
+A `.rmfmap` file is a plain zip holding a whole map, laid out the way a storage
+backend lays out a building:
 
 ```
-manifest.json         format, version, yaml name, and a path -> entry table
-<id>.building.yaml    byte-identical to what the editor writes normally
-assets/...            one entry per referenced image
+manifest.json          format, version, yaml name, and a path -> entry table
+<id>.building.yaml     byte-identical to what the editor writes normally
+layers/<level>/x.png   every image at the path the yaml names it by
 ```
+
+That is the same shape as `<id>/` in an S3 bucket or a local root, so a bundle
+unzips into a building folder and a building folder zips into a bundle. A zip
+with no `manifest.json` opens too: the one `*.building.yaml` at its root is the
+map, and every other entry the yaml refers to is one of its images. Anything
+else in the zip is left alone.
+
+Bundles written before this layout put images under `assets/`. They still open,
+since the manifest records where each image lives.
 
 `Download map` in the strip under the canvas writes one. Desktop saves it to a
 path you pick, the browser downloads it. Opening one keeps it in memory: the
 images are never unpacked to disk, and saving repacks the file in place.
+
+New layer images go under `layers/<level>/` unless you spell out a folder
+yourself. The Layers panel says when an image sits somewhere else, and leaves it
+there: moving one means moving it in the backend too.
 
 Image paths inside the yaml are relative to the yaml's own directory. Opening a
 `building.yaml` rewrites any absolute path that points inside that directory

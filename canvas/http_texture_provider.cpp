@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -290,13 +291,28 @@ imrmf_canvas_on_fast_decoded(int handle, int w, int h, int orig_w, int orig_h) {
 }
 #endif
 
+#ifndef __EMSCRIPTEN__
+// libcurl initialises itself on first use, and that is not thread safe. Loads
+// run on workers now, so do it here, before any of them start.
+void curl_init_once() {
+  static std::once_flag flag;
+  std::call_once(flag, []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
+}
+#else
+void curl_init_once() {}
+#endif
+
 HttpTextureProvider::HttpTextureProvider()
     : url_builder_([](const std::string &id, const std::string &path) {
         return "/layer_asset?id=" + urlencode(id) + "&path=" + urlencode(path);
-      }) {}
+      }) {
+  curl_init_once();
+}
 
 HttpTextureProvider::HttpTextureProvider(UrlBuilder b)
-    : url_builder_(std::move(b)) {}
+    : url_builder_(std::move(b)) {
+  curl_init_once();
+}
 
 void HttpTextureProvider::set_base_url(std::string base) {
   while (!base.empty() && base.back() == '/')
@@ -342,28 +358,63 @@ void HttpTextureProvider::trigger_load(LayerTexture &out,
   imrmf_canvas_fetch_worker(url.c_str(), 2048, handle, (int)out.id,
                             (int)out.id_inv, tr, tg, tb);
 #else
-  std::string url = base_url_ + url_builder_(asset_id, asset_path);
-  std::vector<unsigned char> body;
+  // A blocking fetch here froze the window for the whole request, which is why
+  // the first switch to a floor took seconds against a remote server.
+  loader_.submit(
+      cache_key,
+      [url = base_url_ + url_builder_(asset_id, asset_path)](
+          std::vector<unsigned char> *body) {
+        CURL *curl = curl_easy_init();
+        if (!curl)
+          return false;
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_bytes);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, body);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+        long status = 0;
+        CURLcode rc = curl_easy_perform(curl);
+        if (rc == CURLE_OK)
+          curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        curl_easy_cleanup(curl);
+        return rc == CURLE_OK && status >= 200 && status < 300;
+      },
+      tr, tg, tb);
+  (void)out;
+#endif
+}
+
+#ifndef __EMSCRIPTEN__
+bool HttpTextureProvider::read_asset(const std::string &asset_path,
+                                     std::vector<unsigned char> *out) const {
+  if (asset_path.empty() || !out || !url_builder_)
+    return false;
+  const std::string url = base_url_ + url_builder_(asset_id_, asset_path);
   CURL *curl = curl_easy_init();
-  if (!curl) {
-    out.status = LoadStatus::Failed;
-    return;
-  }
+  if (!curl)
+    return false;
+  std::vector<unsigned char> body;
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_bytes);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
   long status = 0;
-  CURLcode rc = curl_easy_perform(curl);
+  const CURLcode rc = curl_easy_perform(curl);
   if (rc == CURLE_OK)
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(curl);
-  if (rc != CURLE_OK || status < 200 || status >= 300) {
-    out.status = LoadStatus::Failed;
-    return;
-  }
-  decode_into_texture(out, body.data(), body.size(), tr, tg, tb);
-#endif
+  if (rc != CURLE_OK || status < 200 || status >= 300 || body.empty())
+    return false;
+  *out = std::move(body);
+  return true;
 }
+
+void HttpTextureProvider::pump() {
+  loader_.drain([this](const std::string &key, const DecodedPixels &px) {
+    auto it = textures_.find(key);
+    if (it != textures_.end())
+      upload_decoded(it->second, px);
+  });
+}
+#endif
 
 } // namespace imrmf::map_editor::canvas

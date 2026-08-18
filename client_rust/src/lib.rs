@@ -28,7 +28,9 @@ thread_local! {
 
 struct Session {
     doc: Arc<Mutex<Doc>>,
-    outbox: UnboundedSender<Vec<u8>>,
+    // None for a local file session: there is a doc and an undo stack, but
+    // nothing to broadcast to.
+    outbox: Option<UnboundedSender<Vec<u8>>>,
     synced: Arc<AtomicBool>,
     remote_dirty: Arc<AtomicBool>,
 }
@@ -159,6 +161,86 @@ pub extern "C" fn imrmf_client_mount(
     }
 }
 
+/// Uploads one layer asset under the yaml-relative path the map refers to it
+/// by. The server re-checks both, this only keeps a bad request off the wire.
+#[no_mangle]
+pub extern "C" fn imrmf_client_put_asset(
+    server_url: *const c_char,
+    id: *const c_char,
+    path: *const c_char,
+    data: *const u8,
+    len: usize,
+) -> *mut c_char {
+    let base = from_c_str(server_url);
+    let id = from_c_str(id);
+    let path = from_c_str(path);
+    if !building_id_is_valid(&id) {
+        return err("invalid building id");
+    }
+    if !asset_path_is_safe(&path) {
+        return err("invalid asset path");
+    }
+    if data.is_null() || len == 0 {
+        return err("empty asset");
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    let url = format!(
+        "{}/layer_asset?id={}&path={}",
+        base.trim_end_matches('/'),
+        percent_encode(&id),
+        percent_encode(&path)
+    );
+    match ureq::put(&url)
+        .timeout(Duration::from_secs(120))
+        .set("content-type", "application/octet-stream")
+        .send_bytes(bytes)
+    {
+        Ok(_) => ok(""),
+        Err(e) => err(e),
+    }
+}
+
+/// Same rule as the server's id_safe. Anything else is rejected there anyway,
+/// this just keeps a doomed request off the wire.
+fn building_id_is_valid(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+// Relative, no traversal, no drive letters, no control characters. The server
+// checks again and the storage backend confines the write to the asset root.
+fn asset_path_is_safe(path: &str) -> bool {
+    if path.is_empty() || path.len() > 1024 {
+        return false;
+    }
+    if path.starts_with('/') || path.starts_with('\\') || path.contains('\\') {
+        return false;
+    }
+    if path.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    if path.as_bytes().get(1) == Some(&b':') {
+        return false;
+    }
+    !path.split('/').any(|part| part == ".." || part.is_empty())
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '/') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// Tells the server to load a building into the shared doc.
 #[no_mangle]
 pub extern "C" fn imrmf_client_load_building(
@@ -275,23 +357,51 @@ pub extern "C" fn imrmf_client_connect(ws_url: *const c_char) -> *mut c_char {
         task_synced.store(false, Ordering::SeqCst);
     });
 
-    // Scoped to our own origin, so undo leaves peers' edits alone. UndoManager
-    // is neither Send nor Sync, so it lives in a thread local rather than the
-    // shared Session. Every FFI call comes from the one UI thread.
+    install_undo(&doc.lock().unwrap());
+
+    *session().lock().unwrap() = Some(Arc::new(Session {
+        doc,
+        outbox: Some(tx),
+        synced,
+        remote_dirty,
+    }));
+    ok("")
+}
+
+// Scoped to our own origin, so undo leaves peers' edits alone. UndoManager is
+// neither Send nor Sync, so it lives in a thread local rather than the shared
+// Session. Every FFI call comes from the one UI thread.
+fn install_undo(doc: &Doc) {
+    let root = doc.get_or_insert_map(yaml_bridge::ROOT_KEY);
+    let mut opts = UndoOptions::default();
+    opts.tracked_origins.insert(Origin::from(LOCAL_ORIGIN));
+    UNDO.with(|u| {
+        *u.borrow_mut() = Some(UndoManager::<()>::with_scope_and_options(doc, &root, opts))
+    });
+}
+
+/// A doc with no server behind it, so a map opened from a file gets the same
+/// undo stack a mounted one has. The seed is untracked, so the first undo
+/// cannot wipe the map the user just opened.
+#[no_mangle]
+pub extern "C" fn imrmf_client_start_local_session(yaml: *const c_char) -> *mut c_char {
+    let yaml = from_c_str(yaml);
+    imrmf_client_disconnect();
+
+    let doc = Arc::new(Mutex::new(Doc::new()));
     {
         let d = doc.lock().unwrap();
-        let root = d.get_or_insert_map(yaml_bridge::ROOT_KEY);
-        let mut opts = UndoOptions::default();
-        opts.tracked_origins.insert(Origin::from(LOCAL_ORIGIN));
-        let mgr = UndoManager::<()>::with_scope_and_options(&d, &root, opts);
-        UNDO.with(|u| *u.borrow_mut() = Some(mgr));
+        if let Err(e) = yaml_bridge::seed_doc(&d, &yaml) {
+            return err(e);
+        }
+        install_undo(&d);
     }
 
     *session().lock().unwrap() = Some(Arc::new(Session {
         doc,
-        outbox: tx,
-        synced,
-        remote_dirty,
+        outbox: None,
+        synced: Arc::new(AtomicBool::new(false)),
+        remote_dirty: Arc::new(AtomicBool::new(false)),
     }));
     ok("")
 }
@@ -319,8 +429,8 @@ fn undo_step(redo: bool) -> bool {
         return false;
     }
     let update = doc.transact().encode_state_as_update_v1(&before);
-    if !update.is_empty() {
-        let _ = s.outbox.send(sync::encode_update_message(&update));
+    if let (Some(tx), false) = (s.outbox.as_ref(), update.is_empty()) {
+        let _ = tx.send(sync::encode_update_message(&update));
     }
     s.remote_dirty.store(true, Ordering::SeqCst);
     true
@@ -412,8 +522,8 @@ pub extern "C" fn imrmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
         return err(e);
     }
     let update = doc.transact().encode_state_as_update_v1(&before);
-    if !update.is_empty() {
-        let _ = s.outbox.send(sync::encode_update_message(&update));
+    if let (Some(tx), false) = (s.outbox.as_ref(), update.is_empty()) {
+        let _ = tx.send(sync::encode_update_message(&update));
     }
     ok("")
 }
@@ -423,7 +533,131 @@ pub extern "C" fn imrmf_client_push_yaml(yaml: *const c_char) -> *mut c_char {
 pub extern "C" fn imrmf_client_is_connected() -> c_int {
     let guard = session().lock().unwrap();
     match guard.as_ref() {
-        Some(s) if !s.outbox.is_closed() => 1,
+        Some(s) if s.outbox.as_ref().is_some_and(|tx| !tx.is_closed()) => 1,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    // The session is a process-wide singleton and the undo stack is a thread
+    // local, so two tests running at once would drive each other's doc.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn take(raw: *mut c_char) -> String {
+        let out = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
+        imrmf_client_string_free(raw);
+        out
+    }
+
+    fn push(yaml: &str) {
+        let c = CString::new(yaml).unwrap();
+        assert!(take(imrmf_client_push_yaml(c.as_ptr())).starts_with("OK:"));
+    }
+
+    #[test]
+    fn building_ids_match_the_server_rule() {
+        for good in ["H12", "a", "map_1-2", &"x".repeat(64)] {
+            assert!(building_id_is_valid(good), "rejected {good}");
+        }
+        for bad in [
+            "",
+            "../etc",
+            "a/b",
+            "a b",
+            "a.b",
+            "wörld",
+            "a\u{0}b",
+            &"x".repeat(65),
+        ] {
+            assert!(!building_id_is_valid(bad), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn asset_paths_stay_inside_the_map() {
+        for good in ["floor.png", "layers/office.png", "a/b/c.jpg"] {
+            assert!(asset_path_is_safe(good), "rejected {good}");
+        }
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../secrets.png",
+            "layers/../../x.png",
+            "C:\\win.png",
+            "back\\slash.png",
+            "nul\u{0}.png",
+            "double//slash.png",
+        ] {
+            assert!(!asset_path_is_safe(bad), "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn query_values_are_encoded() {
+        assert_eq!(percent_encode("floor.png"), "floor.png");
+        assert_eq!(percent_encode("a b&c=d"), "a%20b%26c%3Dd");
+        // Slashes stay: an asset path needs them, and traversal is rejected by
+        // asset_path_is_safe rather than encoded into something harmless.
+        assert_eq!(percent_encode("layers/x.png"), "layers/x.png");
+        assert_eq!(percent_encode("../x"), "../x");
+        assert!(!asset_path_is_safe("../x"));
+        // The characters that would otherwise end the value or start another.
+        assert_eq!(percent_encode("a?b#c"), "a%3Fb%23c");
+    }
+
+    // A file session has no socket, so this is the only place the undo stack
+    // gets exercised without a server.
+    #[test]
+    fn local_session_undoes_without_a_server() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let seed = CString::new("name: m\nlevels:\n  L1:\n    elevation: 0\n").unwrap();
+        assert!(take(imrmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
+        assert_eq!(imrmf_client_is_connected(), 0);
+        assert_eq!(imrmf_client_can_undo(), 0);
+
+        push("name: m\nlevels:\n  L1:\n    elevation: 7\n");
+        assert_eq!(imrmf_client_can_undo(), 1);
+
+        assert_eq!(imrmf_client_undo(), 1);
+        let after = take(imrmf_client_snapshot_yaml());
+        assert!(
+            after.contains("elevation: 0"),
+            "undo did not rewind: {after}"
+        );
+        assert_eq!(
+            imrmf_client_remote_dirty(),
+            1,
+            "UI would never re-read the doc"
+        );
+
+        assert_eq!(imrmf_client_redo(), 1);
+        let after = take(imrmf_client_snapshot_yaml());
+        assert!(
+            after.contains("elevation: 7"),
+            "redo did not replay: {after}"
+        );
+
+        imrmf_client_disconnect();
+        assert_eq!(imrmf_client_can_undo(), 0);
+    }
+
+    // The seed is what the user just opened. If it were tracked, one undo would
+    // empty the document.
+    #[test]
+    fn seed_is_not_undoable() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let seed = CString::new("name: seeded\nlevels:\n  L1:\n    elevation: 0\n").unwrap();
+        assert!(take(imrmf_client_start_local_session(seed.as_ptr())).starts_with("OK:"));
+        assert_eq!(imrmf_client_can_undo(), 0);
+        assert_eq!(imrmf_client_undo(), 0);
+        let still = take(imrmf_client_snapshot_yaml());
+        assert!(still.contains("seeded"), "seed was rolled back: {still}");
+        imrmf_client_disconnect();
     }
 }

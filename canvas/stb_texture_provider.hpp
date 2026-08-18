@@ -4,6 +4,9 @@
 #pragma once
 
 #include "canvas/canvas.hpp"
+#ifndef __EMSCRIPTEN__
+#include "canvas/texture_loader.hpp"
+#endif
 
 #include <filesystem>
 #include <map>
@@ -33,6 +36,10 @@ public:
   bool read_asset(const std::string &asset_path,
                   std::vector<unsigned char> *out) const override;
 
+#ifndef __EMSCRIPTEN__
+  void pump() override;
+#endif
+
 protected:
   void trigger_load(LayerTexture &out, const std::string &cache_key,
                     const std::string &asset_id, const std::string &asset_path,
@@ -41,6 +48,9 @@ protected:
 private:
   std::filesystem::path root_;
   std::shared_ptr<const AssetBlobs> blobs_;
+#ifndef __EMSCRIPTEN__
+  AsyncTextureLoader loader_;
+#endif
 };
 
 } // namespace imrmf::map_editor::canvas

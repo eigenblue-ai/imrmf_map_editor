@@ -1156,7 +1156,11 @@ EditorView::EditorView(std::unique_ptr<canvas::TextureProvider> provider,
       texture_provider_(std::move(provider)),
       http_provider_(
           dynamic_cast<canvas::HttpTextureProvider *>(texture_provider_.get())),
-      canvas_(building_id_, texture_provider_.get()) {}
+      canvas_(building_id_, texture_provider_.get()) {
+  // So the provider can fetch on its own, which packing a bundle needs.
+  if (http_provider_)
+    http_provider_->set_asset_id(building_id_);
+}
 
 EditorView::~EditorView() = default;
 
@@ -2626,6 +2630,28 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
   }
 }
 
+namespace {
+
+// Where a floor's images live, matching how the backends already store them.
+std::string layer_folder(const std::string &level_name) {
+  return "layers/" + level_name;
+}
+
+// A bare filename goes under the floor's folder. A path the user spelled out
+// with a folder in it is left exactly as typed.
+std::string default_layer_path(const std::string &level_name,
+                               const std::string &file) {
+  if (file.empty() || file.find('/') != std::string::npos)
+    return file;
+  return layer_folder(level_name) + "/" + file;
+}
+
+bool under_layers_folder(const std::string &path) {
+  return path.rfind("layers/", 0) == 0;
+}
+
+} // namespace
+
 void EditorView::draw_add_layer_section(Building &building,
                                         EditorState &state) {
   Level &level = building.levels[state.level_idx];
@@ -2645,14 +2671,18 @@ void EditorView::draw_add_layer_section(Building &building,
       ImGui::InputText("##filename", &state.new_layer_filename);
       ImGui::EndTable();
     }
-    ImGui::TextDisabled("Path is relative to the building.yaml directory.\n");
+    ImGui::TextDisabled("Path is relative to the building.yaml directory.");
+    const std::string will_be =
+        default_layer_path(level.name, state.new_layer_filename);
+    if (will_be != state.new_layer_filename)
+      ImGui::TextDisabled("Goes to %s", will_be.c_str());
     const bool can_add =
         !state.new_layer_name.empty() && !state.new_layer_filename.empty();
     const int action = ImGuiWidgets::ModalActions("Add", "Cancel", can_add);
     if (action == 1) {
       Layer L;
       L.name = state.new_layer_name;
-      L.filename = state.new_layer_filename;
+      L.filename = default_layer_path(level.name, state.new_layer_filename);
       L.visible = true;
       L.color_r = 1.0;
       L.color_g = 1.0;
@@ -2897,6 +2927,25 @@ void EditorView::draw_layer_config_panel(Building &building,
     state.new_layer_filename.clear();
   }
 
+  {
+    const Level &lvl = building.levels[state.level_idx];
+    int stray = 0;
+    if (!lvl.drawing_filename.empty() &&
+        asset_path_is_portable(lvl.drawing_filename) &&
+        !under_layers_folder(lvl.drawing_filename))
+      ++stray;
+    for (const Layer &L : lvl.layers) {
+      if (!L.filename.empty() && asset_path_is_portable(L.filename) &&
+          !under_layers_folder(L.filename))
+        ++stray;
+    }
+    if (stray > 0) {
+      ImGui::TextDisabled("%d image%s on this floor sit%s outside %s", stray,
+                          stray == 1 ? "" : "s", stray == 1 ? "s" : "",
+                          layer_folder(lvl.name).c_str());
+    }
+  }
+
   // A failed layer otherwise renders as nothing, with no hint why.
   auto missing_badge = [&](const std::string &cache_key,
                            const std::string &path) {
@@ -2925,6 +2974,20 @@ void EditorView::draw_layer_config_panel(Building &building,
                           "This one is not, so it breaks if the map moves and "
                           "it cannot round-trip through a .rmfmap bundle "
                           "unchanged.");
+      }
+    } else if (!under_layers_folder(path)) {
+      // Said, not done. Moving an image means moving it in the backend too,
+      // which is not this panel's business.
+      ImGui::TextDisabled(ICON_MDI_FOLDER_ALERT " not under layers/");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Images normally live in %s, in the bundle and in "
+            "the backend alike. This one would be %s. Nothing "
+            "moves it for you.",
+            layer_folder(level.name).c_str(),
+            default_layer_path(level.name,
+                               path.substr(path.find_last_of('/') + 1))
+                .c_str());
       }
     }
   };
@@ -2990,7 +3053,7 @@ void EditorView::draw_layer_config_panel(Building &building,
         state.open_layer_browse = true;
         auto slash = level.drawing_filename.find_last_of('/');
         state.browse_subdir = (slash == std::string::npos)
-                                  ? std::string()
+                                  ? layer_folder(level.name)
                                   : level.drawing_filename.substr(0, slash);
       }
       if (ImGui::IsItemHovered())
@@ -3058,7 +3121,7 @@ void EditorView::draw_layer_config_panel(Building &building,
         state.open_layer_browse = true;
         auto slash = L.filename.find_last_of('/');
         state.browse_subdir = (slash == std::string::npos)
-                                  ? std::string()
+                                  ? layer_folder(level.name)
                                   : L.filename.substr(0, slash);
       }
       if (ImGui::IsItemHovered())

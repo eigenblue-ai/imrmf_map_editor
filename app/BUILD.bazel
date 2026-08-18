@@ -98,7 +98,7 @@ cc_binary(
             "--preload-file=$(location //ui:font_ttf)@Inter.ttf",
             "--preload-file=$(location //ui:font_mdi)@materialdesignicons-webfont.ttf",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToNewUTF8,ccall,cwrap,HEAPU8",
-            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded,_imrmf_bundle_add_asset,_imrmf_bundle_build,_imrmf_bundle_data,_imrmf_bundle_release,_imrmf_bundle_open",
+            "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_imrmf_canvas_on_worker_decoded,_imrmf_canvas_on_fast_decoded,_imrmf_bundle_add_asset,_imrmf_bundle_build,_imrmf_bundle_data,_imrmf_bundle_release,_imrmf_bundle_open,_imrmf_create_source_set",
         ],
         "//conditions:default": [],
     }),

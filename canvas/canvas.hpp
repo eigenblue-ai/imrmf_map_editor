@@ -58,6 +58,10 @@ public:
 
   void clear_cache() { textures_.clear(); }
 
+  // Render thread, once a frame. Where a provider that loads in the background
+  // finishes its textures, since GL calls cannot leave this thread.
+  virtual void pump() {}
+
 protected:
   virtual void trigger_load(LayerTexture &out, const std::string &cache_key,
                             const std::string &asset_id,

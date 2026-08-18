@@ -20,8 +20,10 @@ namespace imrmf::map_editor {
 namespace {
 
 constexpr const char *kManifestEntry = "manifest.json";
-constexpr const char *kAssetPrefix = "assets/";
-constexpr const char *kExternalPrefix = "assets/_external/";
+constexpr const char *kYamlSuffix = ".building.yaml";
+// Only for a reference the bucket layout cannot express, which is a path that
+// escapes the map directory or collides with the bundle's own files.
+constexpr const char *kExternalPrefix = "_external/";
 
 // Bounds on what we unpack from an untrusted file. A .rmfmap is something
 // people hand each other, so opening one is an attack surface.
@@ -50,11 +52,24 @@ std::string basename_of(const std::string &path) {
   return name.empty() ? std::string("asset") : name;
 }
 
-// A path that cannot be expressed relative to the map directory gets a flat
-// entry. The counter keeps two files with the same basename apart.
-std::string entry_for(const std::string &path, int *external_seq) {
-  if (asset_path_is_portable(path))
-    return kAssetPrefix + path;
+// An image whose name would shadow one of the bundle's own files. The manifest
+// has to stay findable, and the yaml has to stay the yaml.
+bool collides_with_bundle_file(const std::string &path,
+                               const std::string &yaml_name) {
+  // The last one matters because a map may legitimately name an image inside
+  // _external/, and a flattened entry would then land on top of it.
+  return path == kManifestEntry || path == yaml_name ||
+         path.rfind(kExternalPrefix, 0) == 0;
+}
+
+// An image sits at the path the yaml names it by, which is where the backend
+// keeps it too. Only a path the backend could not address gets a flat entry,
+// and the counter keeps two of those with the same basename apart.
+std::string entry_for(const std::string &path, const std::string &yaml_name,
+                      int *external_seq) {
+  if (asset_path_is_portable(path) &&
+      !collides_with_bundle_file(path, yaml_name))
+    return path;
   return kExternalPrefix + std::to_string(++*external_seq) + "_" +
          basename_of(path);
 }
@@ -132,7 +147,7 @@ MapBundle collect_bundle(const Building &building, std::string yaml_name,
     }
     BundleAsset a;
     a.path = *ref;
-    a.entry = entry_for(*ref, &external_seq);
+    a.entry = entry_for(*ref, out.yaml_name, &external_seq);
     a.bytes = std::move(bytes);
     out.assets.push_back(std::move(a));
   }
@@ -180,6 +195,71 @@ std::vector<unsigned char> write_bundle(const MapBundle &bundle) {
   mz_free(buf);
   return out;
 }
+
+namespace {
+
+// A zip with no manifest is read as a building folder: the one yaml at the
+// root, plus the images it names. That is a bucket's <id>/ folder zipped up.
+MapBundle read_plain_folder(ZipReader &r,
+                            const std::map<std::string, int> &by_name) {
+  MapBundle out;
+  for (const auto &[name, idx] : by_name) {
+    if (name.size() <= std::strlen(kYamlSuffix))
+      continue;
+    if (name.compare(name.size() - std::strlen(kYamlSuffix),
+                     std::strlen(kYamlSuffix), kYamlSuffix) != 0)
+      continue;
+    // Root only. A yaml further down belongs to something else.
+    if (name.find('/') != std::string::npos)
+      continue;
+    if (!out.yaml_name.empty())
+      throw BundleError("archive has more than one building yaml at its root");
+    out.yaml_name = name;
+  }
+  if (out.yaml_name.empty())
+    throw BundleError("no manifest.json and no *.building.yaml, not a map");
+
+  const std::vector<unsigned char> yaml_bytes = extract(
+      r, static_cast<mz_uint>(by_name.at(out.yaml_name)), out.yaml_name);
+  try {
+    out.building =
+        parse_building(std::string(yaml_bytes.begin(), yaml_bytes.end()));
+  } catch (const std::exception &e) {
+    throw BundleError(std::string("bundled yaml failed to parse: ") + e.what());
+  }
+
+  // Only what the map actually refers to. A folder can hold anything else, and
+  // unpacking the lot would be someone else's files in our memory.
+  //
+  // The same caps the manifest path carries. The archive-level size check
+  // counts an entry once, so without a running total one big image would
+  // unpack per mention.
+  std::set<std::string> extracted;
+  std::size_t extracted_bytes = 0;
+  std::size_t seen_refs = 0;
+  for (const std::string *ref : building_asset_refs(out.building)) {
+    if (++seen_refs > kMaxManifestAssets)
+      throw BundleError("map refers to too many images");
+    if (!extracted.insert(*ref).second)
+      continue; // several layers can share one image
+    auto it = by_name.find(*ref);
+    if (it == by_name.end()) {
+      out.missing.push_back(*ref);
+      continue;
+    }
+    BundleAsset asset;
+    asset.path = *ref;
+    asset.entry = *ref;
+    asset.bytes = extract(r, static_cast<mz_uint>(it->second), asset.entry);
+    extracted_bytes += asset.bytes.size();
+    if (extracted_bytes > kMaxTotalBytes)
+      throw BundleError("archive is too large to open");
+    out.assets.push_back(std::move(asset));
+  }
+  return out;
+}
+
+} // namespace
 
 MapBundle read_bundle(const unsigned char *data, std::size_t len) {
   if (!data || len == 0)
@@ -232,7 +312,7 @@ MapBundle read_bundle(const unsigned char *data, std::size_t len) {
 
   const int manifest_idx = index_of(kManifestEntry);
   if (manifest_idx < 0)
-    throw BundleError("no manifest.json, not a .rmfmap map bundle");
+    return read_plain_folder(r, by_name);
 
   const std::vector<unsigned char> manifest_bytes =
       extract(r, static_cast<mz_uint>(manifest_idx), kManifestEntry);

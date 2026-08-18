@@ -211,6 +211,8 @@ std::pair<double, double> MapCanvas::screen_to_world(ImVec2 sp) const {
 
 void MapCanvas::draw(const Building &building, int level_idx,
                      const DrawOptions &opts) {
+  if (provider_)
+    provider_->pump();
   if (building.levels.empty()) {
     ImGui::Text("No levels.");
     return;
