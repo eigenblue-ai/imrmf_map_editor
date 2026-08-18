@@ -239,6 +239,9 @@ struct ConnectionForm {
 ConnPhase g_phase = ConnPhase::BootingConfig;
 ConnectionForm g_form;
 std::vector<std::string> g_buildings;
+// Attached, which is not the same as holding anything. Read off the building
+// list, an empty backend looked unmounted and could never be filled.
+bool g_backend_mounted = false;
 std::string g_error_message;
 
 bool g_locked = false;
@@ -1522,11 +1525,11 @@ void poll_async_result() {
     }
   } else if (g_phase == ConnPhase::Mounting) {
     parse_buildings_payload(payload);
+    g_backend_mounted = true;
     if (g_buildings.empty()) {
-      g_error_message = g_locked
-                            ? "server has no buildings to serve"
-                            : "mount succeeded but no buildings were found";
-      g_phase = ConnPhase::Error;
+      // Nothing to open is not an error, it is a new backend.
+      g_error_message.clear();
+      g_phase = ConnPhase::Mounted;
     } else {
       g_phase = ConnPhase::Mounted;
       if (!g_auto_building.empty() &&
@@ -1572,6 +1575,7 @@ void disconnect_and_reset() {
   g_state = {};
   g_building_id.clear();
   g_buildings.clear();
+  g_backend_mounted = false;
   g_error_message.clear();
   g_snapshots_dirty = true;
   g_branches_dirty = true;
@@ -1715,9 +1719,10 @@ void take_building_ids(const std::string &payload) {
       break;
     start = nl + 1;
   }
+  g_backend_mounted = true;
   if (g_buildings.empty()) {
-    g_error_message = "no buildings there";
-    g_phase = ConnPhase::Error;
+    g_error_message.clear();
+    g_phase = ConnPhase::Mounted;
     return;
   }
   if (g_building_id.empty())
@@ -2091,6 +2096,7 @@ void reset_for_relaunch() {
   g_state = {};
   g_building_id.clear();
   g_buildings.clear();
+  g_backend_mounted = false;
   g_native_yaml_path.clear();
   g_native_bundle_path.clear();
   g_bundle_blobs.reset();
@@ -2628,7 +2634,7 @@ void draw_create_source_picker() {
 
 // One dialog for both front ends. Only the OS file picker differs.
 void draw_open_dialog_body() {
-  const bool mounted = !g_buildings.empty();
+  const bool mounted = g_backend_mounted;
   const bool local = g_form.kind_idx == 0;
   ImGui::TextDisabled(g_locked ? "This server serves one fixed backend."
                                : "Choose where your building.yaml lives.");
@@ -2839,6 +2845,7 @@ void draw_open_dialog_body() {
         disconnect_and_reset();
 #else
         g_buildings.clear();
+        g_backend_mounted = false;
         g_error_message.clear();
         g_phase = ConnPhase::Modal;
 #endif
