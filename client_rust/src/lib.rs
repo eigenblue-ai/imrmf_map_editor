@@ -380,9 +380,10 @@ fn install_undo(doc: &Doc) {
     });
 }
 
-/// A doc with no server behind it, so a map opened from a file gets the same
-/// undo stack a mounted one has. The seed is untracked, so the first undo
-/// cannot wipe the map the user just opened.
+/// A doc with no server behind it, for callers that want CRDT undo without
+/// one. The desktop editor no longer does, a yaml round trip of the whole map
+/// per edit was too slow. The seed is untracked, so the first undo cannot wipe
+/// the map the caller just opened.
 #[no_mangle]
 pub extern "C" fn imrmf_client_start_local_session(yaml: *const c_char) -> *mut c_char {
     let yaml = from_c_str(yaml);

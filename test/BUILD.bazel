@@ -1,0 +1,62 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+package(default_visibility = ["//visibility:private"])
+
+cc_test(
+    name = "edit_history_test",
+    size = "small",
+    srcs = ["edit_history_test.cpp"],
+    deps = [
+        "//model",
+        "@googletest//:gtest_main",
+    ],
+)
+
+# Keeps its own main() for the --roundtrip file mode, so gtest rather than
+# gtest_main.
+cc_test(
+    name = "yaml_io_test",
+    size = "small",
+    srcs = ["yaml_io_test.cpp"],
+    deps = [
+        "//model",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "map_bundle_test",
+    size = "small",
+    srcs = ["map_bundle_test.cpp"],
+    deps = [
+        "//model:map_bundle",
+        "//third_party/miniz",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "texture_loader_test",
+    size = "small",
+    srcs = ["texture_loader_test.cpp"],
+    target_compatible_with = select({
+        "//config:wasm": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "//canvas",
+        "@googletest//:gtest_main",
+    ],
+)
+
+# Guards the shape of the per-edit cost, not a wall-clock number. Timing based,
+# so the thresholds are ratios with room to spare.
+cc_test(
+    name = "edit_cost_test",
+    size = "small",
+    srcs = ["edit_cost_test.cpp"],
+    deps = [
+        "//model",
+        "@googletest//:gtest_main",
+    ],
+)

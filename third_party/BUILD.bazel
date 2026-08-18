@@ -4,8 +4,3 @@ exports_files([
     "rmf_building_map_tools.BUILD.bazel",
     "requirements.txt",
 ])
-
-filegroup(
-    name = "rmf_patches",
-    srcs = glob(["patches/*.patch"]),
-)

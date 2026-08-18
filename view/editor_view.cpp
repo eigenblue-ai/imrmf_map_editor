@@ -1368,7 +1368,19 @@ void EditorView::draw(Building &building, EditorState &state,
       (void)state;
 #endif
     };
-    auto do_undo = [&settle]() {
+    // Edits are recorded a beat after they happen, so anything still pending
+    // has to land before undo starts rewinding.
+    auto flush = [&top_bar]() {
+      if (top_bar.on_flush_edits)
+        top_bar.on_flush_edits();
+    };
+    auto do_undo = [&settle, &flush, &top_bar]() {
+      flush();
+      if (top_bar.on_undo) {
+        top_bar.on_undo();
+        settle();
+        return;
+      }
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_undo();
 #else
@@ -1376,7 +1388,13 @@ void EditorView::draw(Building &building, EditorState &state,
 #endif
       settle();
     };
-    auto do_redo = [&settle]() {
+    auto do_redo = [&settle, &flush, &top_bar]() {
+      flush();
+      if (top_bar.on_redo) {
+        top_bar.on_redo();
+        settle();
+        return;
+      }
 #ifdef __EMSCRIPTEN__
       map_editor_yjs_redo();
 #else
@@ -1560,20 +1578,33 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   ImGui::SameLine();
 
   bool can_undo = false, can_redo = false;
+  if (top_bar.can_undo && top_bar.can_redo) {
+    can_undo = top_bar.can_undo();
+    can_redo = top_bar.can_redo();
+  } else {
 #ifdef __EMSCRIPTEN__
-  can_undo = map_editor_yjs_can_undo() != 0;
-  can_redo = map_editor_yjs_can_redo() != 0;
+    can_undo = map_editor_yjs_can_undo() != 0;
+    can_redo = map_editor_yjs_can_redo() != 0;
 #else
-  can_undo = imrmf_client_can_undo() != 0;
-  can_redo = imrmf_client_can_redo() != 0;
+    can_undo = imrmf_client_can_undo() != 0;
+    can_redo = imrmf_client_can_redo() != 0;
 #endif
+  }
   if (!can_undo)
     ImGui::BeginDisabled();
   if (ImGui::Button(ICON_MDI_UNDO)) {
+    if (top_bar.on_flush_edits)
+      top_bar.on_flush_edits();
+    if (top_bar.on_undo) {
+      top_bar.on_undo();
+    } else {
 #ifdef __EMSCRIPTEN__
-    map_editor_yjs_undo();
+      map_editor_yjs_undo();
 #else
-    imrmf_client_undo();
+      imrmf_client_undo();
+#endif
+    }
+#ifndef __EMSCRIPTEN__
     g_local_edit = false;
     state.dirty = false;
 #endif
@@ -1586,10 +1617,18 @@ void EditorView::draw_top_bar(Building &building, EditorState &state,
   if (!can_redo)
     ImGui::BeginDisabled();
   if (ImGui::Button(ICON_MDI_REDO)) {
+    if (top_bar.on_flush_edits)
+      top_bar.on_flush_edits();
+    if (top_bar.on_redo) {
+      top_bar.on_redo();
+    } else {
 #ifdef __EMSCRIPTEN__
-    map_editor_yjs_redo();
+      map_editor_yjs_redo();
 #else
-    imrmf_client_redo();
+      imrmf_client_redo();
+#endif
+    }
+#ifndef __EMSCRIPTEN__
     g_local_edit = false;
     state.dirty = false;
 #endif

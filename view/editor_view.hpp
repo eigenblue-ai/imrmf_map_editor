@@ -170,6 +170,15 @@ struct TopBarHooks {
   bool has_server = true;
   // Native only: rewrite the file this map was opened from. Unset hides it.
   std::function<void()> on_save_in_place;
+  // Records any edit still pending. Undo rewinds the session's history, so an
+  // edit that has not landed in it would be rewound past.
+  std::function<void()> on_flush_edits;
+  // Undo/redo for a session that keeps its own history. Unset falls back to
+  // the CRDT document.
+  std::function<bool()> can_undo;
+  std::function<bool()> can_redo;
+  std::function<void()> on_undo;
+  std::function<void()> on_redo;
   bool dirty = false;
   // A server session disconnects, a file session closes.
   std::string disconnect_label = "Disconnect";

@@ -23,6 +23,7 @@ rust_library(
 
 rust_test(
     name = "core_test",
+    size = "small",
     crate = ":core",
     edition = "2021",
 )
@@ -76,6 +77,7 @@ rust_binary(
 
 rust_test(
     name = "server_test",
+    size = "small",
     srcs = _SERVER_SRCS,
     crate_root = "src/main.rs",
     edition = "2021",

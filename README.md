@@ -55,12 +55,33 @@ client_rust/  Desktop CRDT client: y-sync over WebSocket + REST, as a C ABI.
 server_rust/  axum/yrs WebSocket server: CRDT + REST. :core is shared with the
               desktop client.
 server/       Shared buildings_api.
+test/         GoogleTest suite for the C++ side. Rust tests stay inline, as
+              `#[cfg(test)]` modules next to what they cover.
 third_party/  Patched rmf_building_map_tools, vendored miniz.
 ```
 
 The browser gets fetch, the WebSocket, and the Yjs provider from JS. The desktop
 gets the same three from `client_rust`, which reuses the server's own protocol
 and yaml-bridge code, so both speak the same wire format to the same server.
+
+## Tests
+
+```bash
+bazel test //test/...                      # C++: model, bundles, canvas, cost
+bazel test //server_rust/... //client_rust/...   # Rust
+```
+
+`//test:edit_cost_test` is a regression guard rather than a unit test: it
+asserts that recording one edit stays orders of magnitude cheaper than a yaml
+round trip of the whole map, which is what a file session used to pay per click.
+It prints the numbers it measured, so a run doubles as a benchmark.
+
+`//test:yaml_io_test` also takes `--roundtrip <file.building.yaml>...`, which
+round-trips real maps and reports geometry counts instead of running the cases.
+
+CI (`.github/workflows/ci.yml`) runs the same commands on every pull request,
+plus the wasm and macOS desktop builds, and the GHCR image only publishes once
+the tests pass.
 
 ## Run
 
@@ -81,8 +102,13 @@ bazel run //:dev -- --port 30099 --no-validate
 ### Desktop
 
 ```bash
-bazel run //app:editor
+bazel run --config=release //app:editor
 ```
+
+`--config=release` builds optimized. The default unoptimized build is fine for
+iterating on the code, but each edit re-serializes the map and reconciles it
+into the CRDT document, and that work is several times slower unoptimized --
+enough to be felt as lag on a large map.
 
 Opens a dialog first, then the editor window once a building is chosen. The
 dialog is the same one the browser shows, with the same two backends:

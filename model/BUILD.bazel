@@ -1,4 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -6,22 +6,18 @@ cc_library(
     name = "model",
     srcs = [
         "building.cpp",
+        "edit_history.cpp",
         "yaml_io.cpp",
     ],
     hdrs = [
         "building.hpp",
+        "edit_history.hpp",
         "yaml_io.hpp",
     ],
     strip_include_prefix = "/",
     deps = [
         "@yaml-cpp",
     ],
-)
-
-cc_test(
-    name = "yaml_io_test",
-    srcs = ["yaml_io_test.cpp"],
-    deps = [":model"],
 )
 
 # No zip and no UI, so path handling costs the editor nothing extra.
@@ -43,14 +39,5 @@ cc_library(
         ":model",
         "//third_party/miniz",
         "@nlohmann_json//:json",
-    ],
-)
-
-cc_test(
-    name = "map_bundle_test",
-    srcs = ["map_bundle_test.cpp"],
-    deps = [
-        ":map_bundle",
-        "//third_party/miniz",
     ],
 )

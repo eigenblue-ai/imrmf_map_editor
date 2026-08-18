@@ -1,0 +1,131 @@
+name: ci
+
+# Tests gate the image. Main used to push :latest whether or not anything
+# worked, and pull requests got no signal at all. One Bazel cache for all jobs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push to a pull request cancels the first. Main runs to the end, so
+# an image publish is never half done.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bazel cache
+        uses: bazel-contrib/setup-bazel@0.9.1
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel
+          repository-cache: true
+
+      # //canvas includes GL/gl.h and links -lGL, which the runner image lacks.
+      - name: Install GL headers
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev
+
+      # Catches a BUILD file that stopped loading. Building a target cannot,
+      # it only loads the packages it needs.
+      - name: Check every package loads
+        run: bazel query //... > /dev/null
+
+      - name: Test
+        run: bazel test //test/... //server_rust/... //client_rust/...
+
+      # The browser build has its own ifdef paths, so compile it here rather
+      # than finding out after the merge.
+      - name: Build wasm app
+        run: bazel build --config=wasm //app:editor_wasm
+
+  desktop:
+    # The only job covering the desktop-only paths in app/ and client_rust/.
+    # Not a gate on the image, which ships the server and browser build.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bazel cache
+        uses: bazel-contrib/setup-bazel@0.9.1
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel
+          repository-cache: true
+
+      - name: Build desktop editor
+        run: bazel build //app:editor
+
+      - name: Test
+        run: bazel test //test/...
+
+  # Bazel-builds the server + wasm app, then pushes the runtime image to GHCR.
+  build-and-push:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bazel cache
+        uses: bazel-contrib/setup-bazel@0.9.1
+        with:
+          bazelisk-cache: true
+          disk-cache: bazel
+          repository-cache: true
+
+      - name: Build server
+        run: bazel build //server_rust:imrmf_map_editor
+
+      - name: Build wasm app
+        run: bazel build --config=wasm //app:editor_wasm
+
+      # bazel-bin is a symlink tree; copy real files so docker can COPY them.
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist/server_rust dist/app
+          cp -RL bazel-bin/server_rust/imrmf_map_editor dist/server_rust/
+          # tar -h to flatten the nested runfiles symlinks
+          tar -C bazel-bin/server_rust -chf - imrmf_map_editor.runfiles \
+            | tar -xf - -C dist/server_rust
+          cp -RL bazel-bin/app/editor_wasm dist/app/
+
+      - name: Lowercase image name
+        id: img
+        run: echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}

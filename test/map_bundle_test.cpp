@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 The ImRmfMapEditor Authors
 //
-// Round-trip and hostile-input tests for the .rmfmap bundle. Same no-gtest
-// style as yaml_io_test.cpp.
+// Round-trip and hostile-input tests for the .rmfmap bundle.
 
 #include "model/asset_paths.hpp"
 #include "model/map_bundle.hpp"
@@ -17,19 +16,11 @@
 #include <string>
 #include <tuple>
 
+#include "gtest/gtest.h"
+
 using namespace imrmf::map_editor;
 
 namespace {
-
-int g_failures = 0;
-
-#define CHECK(cond)                                                            \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);              \
-      ++g_failures;                                                            \
-    }                                                                          \
-  } while (0)
 
 const char *kYaml = R"(name: bundle_test
 coordinate_system: reference_image
@@ -73,7 +64,7 @@ AssetReader reader_over(const std::map<std::string, std::string> &files) {
   };
 }
 
-void test_roundtrip() {
+TEST(MapBundle, Roundtrip) {
   Building b = parse_building(kYaml);
   const std::map<std::string, std::string> files = {
       {"floor.png", "FLOORPLANBYTES"},
@@ -83,51 +74,54 @@ void test_roundtrip() {
 
   MapBundle packed =
       collect_bundle(b, "bundle_test.building.yaml", reader_over(files));
-  CHECK(packed.assets.size() == 3);
-  CHECK(packed.missing.empty());
+  EXPECT_EQ(packed.assets.size(), 3);
+  EXPECT_TRUE(packed.missing.empty());
 
   std::vector<unsigned char> zip = write_bundle(packed);
-  CHECK(zip.size() > 4);
+  EXPECT_TRUE(zip.size() > 4);
   // Local file header magic, it really is a zip.
-  CHECK(zip[0] == 'P' && zip[1] == 'K' && zip[2] == 3 && zip[3] == 4);
+  EXPECT_EQ(zip[0], 'P');
+  EXPECT_EQ(zip[1], 'K');
+  EXPECT_EQ(zip[2], 3);
+  EXPECT_EQ(zip[3], 4);
 
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.yaml_name == "bundle_test.building.yaml");
-  CHECK(got.missing.empty());
-  CHECK(got.building.name == "bundle_test");
-  CHECK(got.building.levels.size() == 1);
-  CHECK(got.building.levels[0].layers.size() == 2);
-  CHECK(got.building.levels[0].drawing_filename == "floor.png");
-  CHECK(got.building.levels[0].lanes.size() == 1);
+  EXPECT_EQ(got.yaml_name, "bundle_test.building.yaml");
+  EXPECT_TRUE(got.missing.empty());
+  EXPECT_EQ(got.building.name, "bundle_test");
+  EXPECT_EQ(got.building.levels.size(), 1);
+  EXPECT_EQ(got.building.levels[0].layers.size(), 2);
+  EXPECT_EQ(got.building.levels[0].drawing_filename, "floor.png");
+  EXPECT_EQ(got.building.levels[0].lanes.size(), 1);
 
   for (const auto &[path, want] : files) {
     const std::vector<unsigned char> *bytes = find_asset(got, path);
-    CHECK(bytes != nullptr);
+    EXPECT_NE(bytes, nullptr);
     if (bytes)
-      CHECK(std::string(bytes->begin(), bytes->end()) == want);
+      EXPECT_EQ(std::string(bytes->begin(), bytes->end()), want);
   }
 
   // The yaml inside the bundle is the ordinary serialization, unchanged.
-  CHECK(serialize_building(got.building) == serialize_building(b));
+  EXPECT_EQ(serialize_building(got.building), serialize_building(b));
 }
 
-void test_missing_asset_is_reported_not_fatal() {
+TEST(MapBundle, MissingAssetIsReportedNotFatal) {
   Building b = parse_building(kYaml);
   const std::map<std::string, std::string> files = {
       {"floor.png", "FLOORPLANBYTES"},
   };
   MapBundle packed = collect_bundle(b, "m.building.yaml", reader_over(files));
-  CHECK(packed.assets.size() == 1);
-  CHECK(packed.missing.size() == 2);
+  EXPECT_EQ(packed.assets.size(), 1);
+  EXPECT_EQ(packed.missing.size(), 2);
 
   std::vector<unsigned char> zip = write_bundle(packed);
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.assets.size() == 1);
+  EXPECT_EQ(got.assets.size(), 1);
   // The yaml still references them, so reading flags them again.
-  CHECK(got.missing.size() == 2);
+  EXPECT_EQ(got.missing.size(), 2);
 }
 
-void test_absolute_path_goes_external() {
+TEST(MapBundle, AbsolutePathGoesExternal) {
   Building b = parse_building(kYaml);
   b.levels[0].layers[0].filename = "/etc/somewhere/office.png";
   const std::map<std::string, std::string> files = {
@@ -141,25 +135,25 @@ void test_absolute_path_goes_external() {
   for (const BundleAsset &a : packed.assets) {
     if (a.path == "/etc/somewhere/office.png") {
       found_external = true;
-      CHECK(a.entry.rfind("_external/", 0) == 0);
-      CHECK(a.entry.find("office.png") != std::string::npos);
+      EXPECT_EQ(a.entry.rfind("_external/", 0), 0);
+      EXPECT_NE(a.entry.find("office.png"), std::string::npos);
     }
   }
-  CHECK(found_external);
+  EXPECT_TRUE(found_external);
 
   std::vector<unsigned char> zip = write_bundle(packed);
   MapBundle got = read_bundle(zip.data(), zip.size());
   // The yaml keeps the original string, and the bytes still come back by it.
-  CHECK(got.building.levels[0].layers[0].filename ==
-        "/etc/somewhere/office.png");
+  EXPECT_EQ(got.building.levels[0].layers[0].filename,
+            "/etc/somewhere/office.png");
   const std::vector<unsigned char> *bytes =
       find_asset(got, "/etc/somewhere/office.png");
-  CHECK(bytes != nullptr);
+  EXPECT_NE(bytes, nullptr);
   if (bytes)
-    CHECK(std::string(bytes->begin(), bytes->end()) == "OFFICE");
+    EXPECT_EQ(std::string(bytes->begin(), bytes->end()), "OFFICE");
 }
 
-void test_duplicate_reference_packed_once() {
+TEST(MapBundle, DuplicateReferencePackedOnce) {
   Building b = parse_building(kYaml);
   b.levels[0].layers[1].filename = b.levels[0].layers[0].filename;
   const std::map<std::string, std::string> files = {
@@ -167,11 +161,11 @@ void test_duplicate_reference_packed_once() {
       {"layers/office.png", "OFFICE"},
   };
   MapBundle packed = collect_bundle(b, "m.building.yaml", reader_over(files));
-  CHECK(packed.assets.size() == 2);
-  CHECK(packed.missing.empty());
+  EXPECT_EQ(packed.assets.size(), 2);
+  EXPECT_TRUE(packed.missing.empty());
 }
 
-void test_rejects_garbage() {
+TEST(MapBundle, RejectsGarbage) {
   const std::string junk = "not a zip at all, not even close";
   bool threw = false;
   try {
@@ -180,7 +174,7 @@ void test_rejects_garbage() {
   } catch (const BundleError &) {
     threw = true;
   }
-  CHECK(threw);
+  EXPECT_TRUE(threw);
 
   threw = false;
   try {
@@ -188,10 +182,10 @@ void test_rejects_garbage() {
   } catch (const BundleError &) {
     threw = true;
   }
-  CHECK(threw);
+  EXPECT_TRUE(threw);
 }
 
-void test_rejects_truncated() {
+TEST(MapBundle, RejectsTruncated) {
   Building b = parse_building(kYaml);
   const std::map<std::string, std::string> files = {{"floor.png", "F"}};
   std::vector<unsigned char> zip =
@@ -203,12 +197,12 @@ void test_rejects_truncated() {
   } catch (const BundleError &) {
     threw = true;
   }
-  CHECK(threw);
+  EXPECT_TRUE(threw);
 }
 
 // The layout is the point: an image sits where the yaml says it does, which is
 // where the storage backend keeps it too.
-void test_entries_mirror_the_backend_layout() {
+TEST(MapBundle, EntriesMirrorTheBackendLayout) {
   Building b = parse_building(kYaml);
   const std::map<std::string, std::string> files = {
       {"floor.png", "F"},
@@ -217,12 +211,12 @@ void test_entries_mirror_the_backend_layout() {
   };
   MapBundle packed = collect_bundle(b, "m.building.yaml", reader_over(files));
   for (const BundleAsset &a : packed.assets)
-    CHECK(a.entry == a.path);
+    EXPECT_EQ(a.entry, a.path);
 
   const std::vector<unsigned char> zip = write_bundle(packed);
   mz_zip_archive z{};
   std::memset(&z, 0, sizeof(z));
-  CHECK(mz_zip_reader_init_mem(&z, zip.data(), zip.size(), 0));
+  EXPECT_TRUE(mz_zip_reader_init_mem(&z, zip.data(), zip.size(), 0));
   std::set<std::string> names;
   for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&z); ++i) {
     mz_zip_archive_file_stat st;
@@ -230,12 +224,12 @@ void test_entries_mirror_the_backend_layout() {
       names.insert(st.m_filename);
   }
   mz_zip_reader_end(&z);
-  CHECK(names.count("manifest.json") == 1);
-  CHECK(names.count("m.building.yaml") == 1);
-  CHECK(names.count("layers/office.png") == 1);
-  CHECK(names.count("floor.png") == 1);
+  EXPECT_EQ(names.count("manifest.json"), 1);
+  EXPECT_EQ(names.count("m.building.yaml"), 1);
+  EXPECT_EQ(names.count("layers/office.png"), 1);
+  EXPECT_EQ(names.count("floor.png"), 1);
   for (const std::string &n : names)
-    CHECK(n.rfind("assets/", 0) != 0);
+    EXPECT_NE(n.rfind("assets/", 0), 0);
 }
 
 // Hand-built archives, since write_bundle only produces well-formed ones and
@@ -273,37 +267,37 @@ bool rejects(const std::vector<unsigned char> &zip) {
 
 // A manifest that is present but unreadable is an error. Absent is not, that is
 // the plain-folder case.
-void test_rejects_broken_manifest() {
-  CHECK(rejects(build_zip({{"manifest.json", "{ not json", true},
-                           {"m.building.yaml", kYaml, true}})));
-  CHECK(rejects(build_zip({{"manifest.json",
-                            R"({"format":"something-else",)"
-                            R"("version":1,)"
-                            R"("building":"m.building.yaml"})",
-                            true},
-                           {"m.building.yaml", kYaml, true}})));
-  CHECK(rejects(build_zip({{"manifest.json",
-                            R"({"format":"rmfmap","version":99,)"
-                            R"("building":"m.building.yaml"})",
-                            true},
-                           {"m.building.yaml", kYaml, true}})));
+TEST(MapBundle, RejectsBrokenManifest) {
+  EXPECT_TRUE(rejects(build_zip({{"manifest.json", "{ not json", true},
+                                 {"m.building.yaml", kYaml, true}})));
+  EXPECT_TRUE(rejects(build_zip({{"manifest.json",
+                                  R"({"format":"something-else",)"
+                                  R"("version":1,)"
+                                  R"("building":"m.building.yaml"})",
+                                  true},
+                                 {"m.building.yaml", kYaml, true}})));
+  EXPECT_TRUE(rejects(build_zip({{"manifest.json",
+                                  R"({"format":"rmfmap","version":99,)"
+                                  R"("building":"m.building.yaml"})",
+                                  true},
+                                 {"m.building.yaml", kYaml, true}})));
 }
 
 // A few KB that inflate to many MB. The per-entry cap alone would not catch
 // this ratio until after it had been unpacked.
-void test_rejects_zip_bomb() {
+TEST(MapBundle, RejectsZipBomb) {
   const std::string bomb(48u * 1024u * 1024u, '\0');
   const std::string manifest =
       R"({"format":"rmfmap","version":1,"building":"m.building.yaml",)"
       R"("assets":[{"path":"floor.png","entry":"assets/floor.png"}]})";
-  CHECK(rejects(build_zip({{"manifest.json", manifest, true},
-                           {"m.building.yaml", kYaml, true},
-                           {"assets/floor.png", bomb, true}})));
+  EXPECT_TRUE(rejects(build_zip({{"manifest.json", manifest, true},
+                                 {"m.building.yaml", kYaml, true},
+                                 {"assets/floor.png", bomb, true}})));
 }
 
 // One large entry named by many manifest rows. Each row used to extract its own
 // copy, so memory blew up while every individual check still passed.
-void test_duplicate_manifest_entries_extract_once() {
+TEST(MapBundle, DuplicateManifestEntriesExtractOnce) {
   const std::string big(4u * 1024u * 1024u, 'F');
   std::string assets;
   for (int i = 0; i < 500; ++i) {
@@ -325,12 +319,12 @@ void test_duplicate_manifest_entries_extract_once() {
   for (const BundleAsset &a : got.assets)
     total += a.bytes.size();
   // 500 mentions, one entry, unpacked once.
-  CHECK(got.assets.size() == 1);
-  CHECK(total == big.size());
+  EXPECT_EQ(got.assets.size(), 1);
+  EXPECT_EQ(total, big.size());
 }
 
 // An unbounded asset list is a CPU cost before a single byte is unpacked.
-void test_rejects_oversized_manifest() {
+TEST(MapBundle, RejectsOversizedManifest) {
   std::string assets;
   for (int i = 0; i < 5000; ++i) {
     if (i)
@@ -341,13 +335,13 @@ void test_rejects_oversized_manifest() {
       R"({"format":"rmfmap","version":1,"building":"m.building.yaml",)"
       R"("assets":[)" +
       assets + "]}";
-  CHECK(rejects(build_zip(
+  EXPECT_TRUE(rejects(build_zip(
       {{"manifest.json", manifest, true}, {"m.building.yaml", kYaml, true}})));
 }
 
 // Version 1 wrote images under assets/. The manifest says where each one lives,
 // so those bundles keep opening.
-void test_version_1_layout_still_opens() {
+TEST(MapBundle, Version1LayoutStillOpens) {
   const std::string manifest =
       R"({"format":"rmfmap","version":1,"building":"m.building.yaml",)"
       R"("assets":[{"path":"floor.png","entry":"assets/floor.png"},)"
@@ -358,20 +352,20 @@ void test_version_1_layout_still_opens() {
                  {"assets/floor.png", "OLDFLOOR", false},
                  {"assets/layers/office.png", "OLDOFFICE", false}});
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.assets.size() == 2);
+  EXPECT_EQ(got.assets.size(), 2);
   const std::vector<unsigned char> *floor = find_asset(got, "floor.png");
-  CHECK(floor != nullptr);
+  EXPECT_NE(floor, nullptr);
   if (floor)
-    CHECK(std::string(floor->begin(), floor->end()) == "OLDFLOOR");
+    EXPECT_EQ(std::string(floor->begin(), floor->end()), "OLDFLOOR");
   const std::vector<unsigned char> *office =
       find_asset(got, "layers/office.png");
-  CHECK(office != nullptr);
+  EXPECT_NE(office, nullptr);
   if (office)
-    CHECK(std::string(office->begin(), office->end()) == "OLDOFFICE");
+    EXPECT_EQ(std::string(office->begin(), office->end()), "OLDOFFICE");
 }
 
 // A building folder straight out of the bucket, zipped, with no manifest.
-void test_plain_building_folder_opens() {
+TEST(MapBundle, PlainBuildingFolderOpens) {
   const std::vector<unsigned char> zip =
       build_zip({{"m.building.yaml", kYaml, true},
                  {"floor.png", "FLOOR", false},
@@ -379,22 +373,22 @@ void test_plain_building_folder_opens() {
                  {"layers/roof.png", "ROOF", false},
                  {"notes.txt", "ignored", true}});
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.yaml_name == "m.building.yaml");
-  CHECK(got.building.name == "bundle_test");
-  CHECK(got.assets.size() == 3);
-  CHECK(got.missing.empty());
+  EXPECT_EQ(got.yaml_name, "m.building.yaml");
+  EXPECT_EQ(got.building.name, "bundle_test");
+  EXPECT_EQ(got.assets.size(), 3);
+  EXPECT_TRUE(got.missing.empty());
   const std::vector<unsigned char> *office =
       find_asset(got, "layers/office.png");
-  CHECK(office != nullptr);
+  EXPECT_NE(office, nullptr);
   if (office)
-    CHECK(std::string(office->begin(), office->end()) == "OFFICE");
+    EXPECT_EQ(std::string(office->begin(), office->end()), "OFFICE");
   // A file the map never mentions is left where it is.
-  CHECK(find_asset(got, "notes.txt") == nullptr);
+  EXPECT_EQ(find_asset(got, "notes.txt"), nullptr);
 }
 
-void test_plain_folder_needs_exactly_one_yaml() {
-  CHECK(rejects(build_zip({{"floor.png", "F", false}})));
-  CHECK(rejects(build_zip(
+TEST(MapBundle, PlainFolderNeedsExactlyOneYaml) {
+  EXPECT_TRUE(rejects(build_zip({{"floor.png", "F", false}})));
+  EXPECT_TRUE(rejects(build_zip(
       {{"a.building.yaml", kYaml, true}, {"b.building.yaml", kYaml, true}})));
   // One at the root and one deeper is not ambiguous, the root wins.
   const std::vector<unsigned char> nested =
@@ -402,21 +396,21 @@ void test_plain_folder_needs_exactly_one_yaml() {
                  {"snapshots/old/m.building.yaml", kYaml, true},
                  {"floor.png", "F", false}});
   MapBundle got = read_bundle(nested.data(), nested.size());
-  CHECK(got.yaml_name == "m.building.yaml");
+  EXPECT_EQ(got.yaml_name, "m.building.yaml");
 }
 
 // A missing image in a folder zip is reported the same way a bundle's is.
-void test_plain_folder_reports_missing() {
+TEST(MapBundle, PlainFolderReportsMissing) {
   const std::vector<unsigned char> zip =
       build_zip({{"m.building.yaml", kYaml, true}, {"floor.png", "F", false}});
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.assets.size() == 1);
-  CHECK(got.missing.size() == 2);
+  EXPECT_EQ(got.assets.size(), 1);
+  EXPECT_EQ(got.missing.size(), 2);
 }
 
 // A map that names an image inside _external/ must not have a flattened entry
 // dropped on top of it.
-void test_external_namespace_is_reserved() {
+TEST(MapBundle, ExternalNamespaceIsReserved) {
   Building b = parse_building(kYaml);
   b.levels[0].drawing_filename = "_external/1_office.png";
   b.levels[0].layers[0].filename = "/etc/somewhere/office.png";
@@ -428,7 +422,7 @@ void test_external_namespace_is_reserved() {
   MapBundle packed = collect_bundle(b, "m.building.yaml", reader_over(files));
   std::set<std::string> entries;
   for (const BundleAsset &a : packed.assets)
-    CHECK(entries.insert(a.entry).second);
+    EXPECT_TRUE(entries.insert(a.entry).second);
 
   const std::vector<unsigned char> zip = write_bundle(packed);
   MapBundle got = read_bundle(zip.data(), zip.size());
@@ -436,18 +430,18 @@ void test_external_namespace_is_reserved() {
       find_asset(got, "_external/1_office.png");
   const std::vector<unsigned char> *theirs =
       find_asset(got, "/etc/somewhere/office.png");
-  CHECK(mine != nullptr);
-  CHECK(theirs != nullptr);
+  EXPECT_NE(mine, nullptr);
+  EXPECT_NE(theirs, nullptr);
   if (mine)
-    CHECK(std::string(mine->begin(), mine->end()) == "MINE");
+    EXPECT_EQ(std::string(mine->begin(), mine->end()), "MINE");
   if (theirs)
-    CHECK(std::string(theirs->begin(), theirs->end()) == "THEIRS");
+    EXPECT_EQ(std::string(theirs->begin(), theirs->end()), "THEIRS");
 }
 
 // One image shared by many layers is unpacked once, in a folder zip just as in
 // a manifest one. Without that, the archive-level size cap counts the entry
 // once while extraction pays for every mention.
-void test_plain_folder_shares_one_image() {
+TEST(MapBundle, PlainFolderSharesOneImage) {
   std::string yaml =
       "name: shared\ncoordinate_system: reference_image\nlevels:\n"
       "  L1:\n    elevation: 0\n    drawing:\n"
@@ -463,21 +457,21 @@ void test_plain_folder_shares_one_image() {
   const std::vector<unsigned char> zip = build_zip(
       {{"m.building.yaml", yaml, true}, {"layers/L1/shared.png", big, false}});
   MapBundle got = read_bundle(zip.data(), zip.size());
-  CHECK(got.assets.size() == 1);
+  EXPECT_EQ(got.assets.size(), 1);
   std::size_t total = 0;
   for (const BundleAsset &a : got.assets)
     total += a.bytes.size();
-  CHECK(total == big.size());
+  EXPECT_EQ(total, big.size());
 }
 
 // Traversal never reaches the filesystem (bundles stay in memory), but the name
 // check is all that stands between us and it, so pin it.
-void test_rejects_traversal_entry() {
+TEST(MapBundle, RejectsTraversalEntry) {
   const std::string manifest =
       R"({"format":"rmfmap","version":1,"building":"m.building.yaml"})";
-  CHECK(rejects(build_zip({{"manifest.json", manifest, true},
-                           {"m.building.yaml", kYaml, true},
-                           {"../../etc/passwd", "x", false}})));
+  EXPECT_TRUE(rejects(build_zip({{"manifest.json", manifest, true},
+                                 {"m.building.yaml", kYaml, true},
+                                 {"../../etc/passwd", "x", false}})));
   // miniz's writer normalises a leading slash away, so name it with a
   // placeholder and patch it back to '/' in the raw bytes. Same length, so
   // every offset in the archive stays valid.
@@ -493,63 +487,35 @@ void test_rejects_traversal_entry() {
       ++patched;
     }
   }
-  CHECK(patched > 0);
-  CHECK(rejects(abs_zip));
+  EXPECT_TRUE(patched > 0);
+  EXPECT_TRUE(rejects(abs_zip));
 }
 
-void test_path_helpers() {
-  CHECK(asset_path_is_portable("floor.png"));
-  CHECK(asset_path_is_portable("layers/office.png"));
-  CHECK(asset_path_is_portable("a/../b.png"));
-  CHECK(!asset_path_is_portable("/abs/floor.png"));
-  CHECK(!asset_path_is_portable("../outside.png"));
-  CHECK(!asset_path_is_portable("a/../../outside.png"));
+TEST(MapBundle, PathHelpers) {
+  EXPECT_TRUE(asset_path_is_portable("floor.png"));
+  EXPECT_TRUE(asset_path_is_portable("layers/office.png"));
+  EXPECT_TRUE(asset_path_is_portable("a/../b.png"));
+  EXPECT_FALSE(asset_path_is_portable("/abs/floor.png"));
+  EXPECT_FALSE(asset_path_is_portable("../outside.png"));
+  EXPECT_FALSE(asset_path_is_portable("a/../../outside.png"));
 
   const std::filesystem::path base = "/maps/office";
-  CHECK(relativize_asset_path("/maps/office/floor.png", base) == "floor.png");
-  CHECK(relativize_asset_path("/maps/office/layers/a.png", base) ==
-        "layers/a.png");
-  CHECK(relativize_asset_path("./floor.png", base) == "floor.png");
-  CHECK(relativize_asset_path("layers/a.png", base) == "layers/a.png");
+  EXPECT_EQ(relativize_asset_path("/maps/office/floor.png", base), "floor.png");
+  EXPECT_EQ(relativize_asset_path("/maps/office/layers/a.png", base),
+            "layers/a.png");
+  EXPECT_EQ(relativize_asset_path("./floor.png", base), "floor.png");
+  EXPECT_EQ(relativize_asset_path("layers/a.png", base), "layers/a.png");
   // Outside the map directory: left as-is rather than turned into "../".
-  CHECK(relativize_asset_path("/elsewhere/a.png", base) == "/elsewhere/a.png");
-  CHECK(relativize_asset_path("", base).empty());
+  EXPECT_EQ(relativize_asset_path("/elsewhere/a.png", base),
+            "/elsewhere/a.png");
+  EXPECT_TRUE(relativize_asset_path("", base).empty());
 }
 
-void test_asset_refs_skip_empties() {
+TEST(MapBundle, AssetRefsSkipEmpties) {
   Building b = parse_building(kYaml);
-  CHECK(building_asset_refs(b).size() == 3);
+  EXPECT_EQ(building_asset_refs(b).size(), 3);
   b.levels[0].drawing_filename.clear();
-  CHECK(building_asset_refs(b).size() == 2);
+  EXPECT_EQ(building_asset_refs(b).size(), 2);
 }
 
 } // namespace
-
-int main() {
-  test_roundtrip();
-  test_missing_asset_is_reported_not_fatal();
-  test_absolute_path_goes_external();
-  test_duplicate_reference_packed_once();
-  test_rejects_garbage();
-  test_rejects_truncated();
-  test_rejects_broken_manifest();
-  test_duplicate_manifest_entries_extract_once();
-  test_rejects_zip_bomb();
-  test_rejects_oversized_manifest();
-  test_rejects_traversal_entry();
-  test_entries_mirror_the_backend_layout();
-  test_version_1_layout_still_opens();
-  test_plain_building_folder_opens();
-  test_plain_folder_needs_exactly_one_yaml();
-  test_plain_folder_reports_missing();
-  test_plain_folder_shares_one_image();
-  test_external_namespace_is_reserved();
-  test_path_helpers();
-  test_asset_refs_skip_empties();
-  if (g_failures == 0) {
-    std::printf("ALL TESTS PASSED\n");
-    return 0;
-  }
-  std::printf("%d CHECK(s) FAILED\n", g_failures);
-  return 1;
-}

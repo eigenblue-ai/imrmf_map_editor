@@ -14,6 +14,9 @@ test --build_tests_only
 test --test_output=errors
 build --verbose_failures
 
+# Vendored code is not ours to fix, and its warnings drown out our own.
+build --per_file_copt=external/.*@-w
+
 build --incompatible_enable_cc_toolchain_resolution
 
 # Picks up the build:macos block below by host platform.
@@ -24,6 +27,9 @@ build --enable_platform_specific_config
 build:macos --extra_toolchains=@local_config_apple_cc_toolchains//:all
 # std::filesystem is marked unavailable below 10.15.
 build:macos --macos_minimum_os=11.0
+# We still target OpenGL, deprecated wholesale in 10.14, so the per-call
+# notes are noise.
+build:macos --copt=-DGL_SILENCE_DEPRECATION
 # rules_ros2 is Linux-only, so the /map publisher is out of the macOS build.
 build:macos --define=ros2=false
 
@@ -34,6 +40,10 @@ common --experimental_isolated_extension_usages
 
 # venv interpreter symlinks do not survive tar/docker COPY (rules_python #2489).
 build --@rules_python//python/config_settings:venvs_use_declare_symlink=no
+
+# yaml-cpp and yrs are template heavy, so unoptimized an edit round trip runs
+# several times slower. Anything interactive wants this.
+build:release --compilation_mode=opt
 
 build:wasm --define=wasm=true
 build:wasm --copt=-fexceptions

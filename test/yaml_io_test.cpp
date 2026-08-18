@@ -1,30 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 The ImRmfMapEditor Authors
 //
-// Self-contained (no gtest) round-trip + cascade tests for the geometry that
-// Phase 1 lifts out of `passthrough`: walls, doors, measurements, floors.
+// Round-trip + cascade tests for the geometry that Phase 1 lifts out of
+// `passthrough`: walls, doors, measurements, floors.
 
 #include "model/building.hpp"
 #include "model/yaml_io.hpp"
 
-#include <cassert>
+#include "gtest/gtest.h"
+
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace imrmf::map_editor;
 
 namespace {
-
-int g_failures = 0;
-
-#define CHECK(cond)                                                            \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);              \
-      ++g_failures;                                                            \
-    }                                                                          \
-  } while (0)
 
 // Mirrors the shape of a real building.yaml level (cf. H12 + door_madness):
 // walls, a measurement, a floor with parameters, and two doors.
@@ -56,60 +48,61 @@ levels:
         vertices: [0, 1, 2, 3]
 )";
 
-void test_roundtrip_parses() {
+TEST(YamlIo, RoundTripParses) {
   Building b = parse_building(kYaml);
-  CHECK(b.levels.size() == 1);
+  EXPECT_EQ(b.levels.size(), 1);
   const Level &l = b.levels[0];
-  CHECK(l.vertices.size() == 5);
-  CHECK(l.lanes.size() == 1);
-  CHECK(l.walls.size() == 3);
-  CHECK(l.doors.size() == 1);
-  CHECK(l.measurements.size() == 1);
-  CHECK(l.floors.size() == 1);
+  EXPECT_EQ(l.vertices.size(), 5);
+  EXPECT_EQ(l.lanes.size(), 1);
+  EXPECT_EQ(l.walls.size(), 3);
+  EXPECT_EQ(l.doors.size(), 1);
+  EXPECT_EQ(l.measurements.size(), 1);
+  EXPECT_EQ(l.floors.size(), 1);
 
   // Walls keep their endpoints + params.
-  CHECK(l.walls[0].start_idx == 0 && l.walls[0].end_idx == 1);
-  CHECK(l.walls[0].params.count("texture_name") == 1);
-  CHECK(l.walls[0].params.at("texture_name").s == "default");
+  EXPECT_EQ(l.walls[0].start_idx, 0);
+  EXPECT_EQ(l.walls[0].end_idx, 1);
+  EXPECT_EQ(l.walls[0].params.count("texture_name"), 1);
+  EXPECT_EQ(l.walls[0].params.at("texture_name").s, "default");
 
   // Door params survive with correct types.
-  CHECK(l.doors[0].params.at("type").s == "double_hinged");
-  CHECK(l.doors[0].params.at("motion_direction").type == ParamType::INT);
-  CHECK(l.doors[0].params.at("motion_direction").i == -1);
+  EXPECT_EQ(l.doors[0].params.at("type").s, "double_hinged");
+  EXPECT_EQ(l.doors[0].params.at("motion_direction").type, ParamType::INT);
+  EXPECT_EQ(l.doors[0].params.at("motion_direction").i, -1);
 
   // Floor: closed loop + parameters under the "parameters" key.
-  CHECK(l.floors[0].vertices.size() == 4);
-  CHECK(l.floors[0].vertices[2] == 2);
-  CHECK(l.floors[0].params.at("texture_name").s == "blue_linoleum");
+  EXPECT_EQ(l.floors[0].vertices.size(), 4);
+  EXPECT_EQ(l.floors[0].vertices[2], 2);
+  EXPECT_EQ(l.floors[0].params.at("texture_name").s, "blue_linoleum");
 
   // Measurement feeds mpp: 5 m over 100 px => 0.05 m/px.
   double mpp = compute_level_mpp(b, 0);
-  CHECK(std::abs(mpp - 0.05) < 1e-9);
+  EXPECT_TRUE(std::abs(mpp - 0.05) < 1e-9);
 }
 
 // parse -> serialize -> parse must preserve every typed field.
-void test_roundtrip_stable() {
+TEST(YamlIo, RoundTripIsStable) {
   Building b1 = parse_building(kYaml);
   std::string out = serialize_building(b1);
   Building b2 = parse_building(out);
   const Level &a = b1.levels[0];
   const Level &c = b2.levels[0];
-  CHECK(a.walls.size() == c.walls.size());
-  CHECK(a.doors.size() == c.doors.size());
-  CHECK(a.measurements.size() == c.measurements.size());
-  CHECK(a.floors.size() == c.floors.size());
+  EXPECT_EQ(a.walls.size(), c.walls.size());
+  EXPECT_EQ(a.doors.size(), c.doors.size());
+  EXPECT_EQ(a.measurements.size(), c.measurements.size());
+  EXPECT_EQ(a.floors.size(), c.floors.size());
   for (size_t i = 0; i < a.walls.size(); ++i) {
-    CHECK(a.walls[i].start_idx == c.walls[i].start_idx);
-    CHECK(a.walls[i].end_idx == c.walls[i].end_idx);
-    CHECK(a.walls[i].params.size() == c.walls[i].params.size());
+    EXPECT_EQ(a.walls[i].start_idx, c.walls[i].start_idx);
+    EXPECT_EQ(a.walls[i].end_idx, c.walls[i].end_idx);
+    EXPECT_EQ(a.walls[i].params.size(), c.walls[i].params.size());
   }
-  CHECK(a.floors[0].vertices == c.floors[0].vertices);
-  CHECK(c.doors[0].params.at("type").s == "double_hinged");
-  CHECK(std::abs(compute_level_mpp(b2, 0) - 0.05) < 1e-9);
+  EXPECT_EQ(a.floors[0].vertices, c.floors[0].vertices);
+  EXPECT_EQ(c.doors[0].params.at("type").s, "double_hinged");
+  EXPECT_TRUE(std::abs(compute_level_mpp(b2, 0) - 0.05) < 1e-9);
 }
 
 // Keys we don't model (models, flattened_*) must round-trip untouched.
-void test_passthrough_preserved() {
+TEST(YamlIo, PassthroughIsPreserved) {
   const char *with_extra = R"(name: t
 levels:
   L1:
@@ -125,38 +118,39 @@ levels:
   Building b = parse_building(with_extra);
   std::string out = serialize_building(b);
   Building b2 = parse_building(out);
-  CHECK(b2.levels[0].passthrough["models"]);
-  CHECK(b2.levels[0].passthrough["flattened_x_offset"]);
-  CHECK(b2.levels[0].floors.size() == 1);
+  EXPECT_TRUE(b2.levels[0].passthrough["models"]);
+  EXPECT_TRUE(b2.levels[0].passthrough["flattened_x_offset"]);
+  EXPECT_EQ(b2.levels[0].floors.size(), 1);
 }
 
 // Deleting a vertex must reindex/cull every geometry kind, not just lanes.
-void test_delete_vertex_cascade() {
+TEST(YamlIo, DeleteVertexCascades) {
   Building b = parse_building(kYaml);
   Level &l = b.levels[0];
   // Delete vertex 1 (used by lane 0->1, wall 0->1 & 1->2, measurement, door,
   // and floor loop).
   delete_vertex(l, 1);
-  CHECK(l.vertices.size() == 4);
+  EXPECT_EQ(l.vertices.size(), 4);
   // Lane 0->1 referenced v1 => dropped.
-  CHECK(l.lanes.empty());
-  // walls 0-1 and 1-2 touched v1 so they drop, 2-3 survives and reindexes to 1-2
-  CHECK(l.walls.size() == 1);
-  CHECK(l.walls[0].start_idx == 1 && l.walls[0].end_idx == 2);
+  EXPECT_TRUE(l.lanes.empty());
+  // walls 0-1 and 1-2 touched v1 so they drop, 2-3 survives and reindexes to
+  // 1-2
+  EXPECT_EQ(l.walls.size(), 1);
+  EXPECT_EQ(l.walls[0].start_idx, 1);
+  EXPECT_EQ(l.walls[0].end_idx, 2);
   // Measurement 0-1 referenced v1 => dropped.
-  CHECK(l.measurements.empty());
+  EXPECT_TRUE(l.measurements.empty());
   // Door 0-3 didn't touch v1 but index 3 shifts to 2.
-  CHECK(l.doors.size() == 1);
-  CHECK(l.doors[0].start_idx == 0 && l.doors[0].end_idx == 2);
+  EXPECT_EQ(l.doors.size(), 1);
+  EXPECT_EQ(l.doors[0].start_idx, 0);
+  EXPECT_EQ(l.doors[0].end_idx, 2);
   // Floor loop [0,1,2,3] -> remove 1, shift => [0,1,2], still >= 3 vertices.
-  CHECK(l.floors.size() == 1);
-  CHECK((l.floors[0].vertices == std::vector<int>{0, 1, 2}));
+  EXPECT_EQ(l.floors.size(), 1);
+  EXPECT_TRUE((l.floors[0].vertices == std::vector<int>{0, 1, 2}));
 }
 
 } // namespace
 
-// Ad-hoc: `yaml_io_test <file.building.yaml>...` round-trips real maps and
-// reports geometry counts. Not run by `bazel test` (no args there).
 int roundtrip_file(const char *path) {
   std::FILE *fp = std::fopen(path, "rb");
   if (!fp) {
@@ -196,23 +190,18 @@ int roundtrip_file(const char *path) {
   return rc;
 }
 
+// Ad-hoc entry point: `yaml_io_test --roundtrip <file.building.yaml>...`
+// round-trips real maps and reports geometry counts, instead of running the
+// test cases. `bazel test` passes no such flag and takes the normal path.
 int main(int argc, char **argv) {
-  if (argc > 1) {
+  ::testing::InitGoogleTest(&argc, argv);
+  if (argc > 2 && std::string(argv[1]) == "--roundtrip") {
     int rc = 0;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 2; i < argc; ++i) {
       std::printf("== %s ==\n", argv[i]);
       rc |= roundtrip_file(argv[i]);
     }
     return rc;
   }
-  test_roundtrip_parses();
-  test_roundtrip_stable();
-  test_passthrough_preserved();
-  test_delete_vertex_cascade();
-  if (g_failures == 0) {
-    std::printf("ALL TESTS PASSED\n");
-    return 0;
-  }
-  std::printf("%d CHECK(s) FAILED\n", g_failures);
-  return 1;
+  return RUN_ALL_TESTS();
 }

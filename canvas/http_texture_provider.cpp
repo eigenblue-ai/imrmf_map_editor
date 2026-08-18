@@ -60,7 +60,9 @@ struct PendingDecode {
 };
 
 std::unordered_map<int, PendingDecode> g_worker_pending;
+#ifdef __EMSCRIPTEN__
 int g_next_handle = 0;
+#endif
 
 #ifdef __EMSCRIPTEN__
 // Layer path: a Web Worker does the fetch, decode, colorize and invert so none

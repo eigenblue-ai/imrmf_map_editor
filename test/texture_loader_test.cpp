@@ -2,9 +2,10 @@
 // Copyright (c) 2026 The ImRmfMapEditor Authors
 //
 // The point of the loader is that submitting never blocks the render thread.
-// Same no-gtest style as the model tests.
 
 #include "canvas/texture_loader.hpp"
+
+#include "gtest/gtest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -15,16 +16,6 @@ using imrmf::map_editor::canvas::AsyncTextureLoader;
 using imrmf::map_editor::canvas::DecodedPixels;
 
 namespace {
-
-int g_failures = 0;
-
-#define CHECK(cond)                                                            \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);              \
-      ++g_failures;                                                            \
-    }                                                                          \
-  } while (0)
 
 using Clock = std::chrono::steady_clock;
 
@@ -130,7 +121,7 @@ const unsigned char kPng[] = {
     0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x87, 0xa1, 0x5f, 0xd6, 0x00, 0x00,
     0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
 
-void test_submit_does_not_wait_for_the_fetch() {
+TEST(AsyncTextureLoader, SubmitDoesNotWaitForTheFetch) {
   AsyncTextureLoader loader;
   const auto t0 = Clock::now();
   loader.submit(
@@ -142,28 +133,28 @@ void test_submit_does_not_wait_for_the_fetch() {
       },
       1.0, 1.0, 1.0);
   const long long submit_ms = ms_since(t0);
-  CHECK(submit_ms < 100);
+  EXPECT_TRUE(submit_ms < 100);
 
   // Nothing is ready yet, and asking must not block either.
   int drained = 0;
   loader.drain([&](const std::string &, const DecodedPixels &) { ++drained; });
-  CHECK(drained == 0);
-  CHECK(ms_since(t0) < 100);
+  EXPECT_EQ(drained, 0);
+  EXPECT_TRUE(ms_since(t0) < 100);
 
   for (int i = 0; i < 100 && drained == 0; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     loader.drain([&](const std::string &key, const DecodedPixels &px) {
       ++drained;
-      CHECK(key == "slow");
-      CHECK(px.ok);
-      CHECK(px.width == 1);
-      CHECK(px.height == 1);
+      EXPECT_EQ(key, "slow");
+      EXPECT_TRUE(px.ok);
+      EXPECT_EQ(px.width, 1);
+      EXPECT_EQ(px.height, 1);
     });
   }
-  CHECK(drained == 1);
+  EXPECT_EQ(drained, 1);
 }
 
-void test_failed_fetch_comes_back_unusable() {
+TEST(AsyncTextureLoader, FailedFetchComesBackUnusable) {
   AsyncTextureLoader loader;
   loader.submit(
       "gone", [](std::vector<unsigned char> *) { return false; }, 1.0, 1.0,
@@ -174,16 +165,16 @@ void test_failed_fetch_comes_back_unusable() {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     loader.drain([&](const std::string &key, const DecodedPixels &px) {
       seen = true;
-      CHECK(key == "gone");
+      EXPECT_EQ(key, "gone");
       // The provider turns this into LoadStatus::Failed, which is what puts the
       // missing-file badge in the Layers panel.
-      CHECK(!px.ok);
+      EXPECT_FALSE(px.ok);
     });
   }
-  CHECK(seen);
+  EXPECT_TRUE(seen);
 }
 
-void test_garbage_bytes_do_not_decode() {
+TEST(AsyncTextureLoader, GarbageBytesDoNotDecode) {
   AsyncTextureLoader loader;
   loader.submit(
       "junk",
@@ -198,14 +189,14 @@ void test_garbage_bytes_do_not_decode() {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     loader.drain([&](const std::string &, const DecodedPixels &px) {
       seen = true;
-      CHECK(!px.ok);
+      EXPECT_FALSE(px.ok);
     });
   }
-  CHECK(seen);
+  EXPECT_TRUE(seen);
 }
 
 // Dropping the loader with work still queued must not hang or crash.
-void test_destruction_with_work_in_flight() {
+TEST(AsyncTextureLoader, DestructionWithWorkInFlight) {
   {
     AsyncTextureLoader loader;
     for (int i = 0; i < 8; ++i) {
@@ -219,24 +210,24 @@ void test_destruction_with_work_in_flight() {
           1.0, 1.0, 1.0);
     }
   }
-  CHECK(true);
+  SUCCEED() << "the destructor returned rather than hanging";
 }
 
 // The regression this whole file exists for: the render thread used to run the
 // decode inline. Compares what a caller pays now against what the same decode
 // costs synchronously.
-void test_submit_costs_far_less_than_decoding() {
+TEST(AsyncTextureLoader, SubmitCostsFarLessThanDecoding) {
   // Big enough that a synchronous decode is measurable, the way a floorplan is.
   const int w = 3000, h = 2000;
   std::vector<unsigned char> png = make_png(w, h);
-  CHECK(!png.empty());
+  EXPECT_FALSE(png.empty());
 
   const auto t_sync = Clock::now();
   const DecodedPixels px =
       imrmf::map_editor::canvas::decode_pixels(png.data(), png.size(), 1, 1, 1);
   const long long sync_us = us_since(t_sync);
-  CHECK(px.ok);
-  CHECK(px.width == w);
+  EXPECT_TRUE(px.ok);
+  EXPECT_EQ(px.width, w);
 
   AsyncTextureLoader loader;
   const auto t_submit = Clock::now();
@@ -253,33 +244,19 @@ void test_submit_costs_far_less_than_decoding() {
               sync_us, submit_us);
   // The old path paid the whole decode every first look at a floor. The new one
   // pays a queue push.
-  CHECK(submit_us * 10 < sync_us);
+  EXPECT_TRUE(submit_us * 10 < sync_us);
 
   bool got = false;
   for (int i = 0; i < 200 && !got; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     loader.drain([&](const std::string &, const DecodedPixels &p) {
       got = true;
-      CHECK(p.ok);
-      CHECK(p.width == w);
-      CHECK(p.height == h);
+      EXPECT_TRUE(p.ok);
+      EXPECT_EQ(p.width, w);
+      EXPECT_EQ(p.height, h);
     });
   }
-  CHECK(got);
+  EXPECT_TRUE(got);
 }
 
 } // namespace
-
-int main() {
-  test_submit_does_not_wait_for_the_fetch();
-  test_failed_fetch_comes_back_unusable();
-  test_garbage_bytes_do_not_decode();
-  test_destruction_with_work_in_flight();
-  test_submit_costs_far_less_than_decoding();
-  if (g_failures) {
-    std::printf("%d check(s) failed\n", g_failures);
-    return 1;
-  }
-  std::printf("all texture loader tests passed\n");
-  return 0;
-}

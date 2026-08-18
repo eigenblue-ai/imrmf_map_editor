@@ -23,6 +23,7 @@
 #include "canvas/stb_texture_provider.hpp"
 #include "model/asset_paths.hpp"
 #include "model/building.hpp"
+#include "model/edit_history.hpp"
 #include "model/map_bundle.hpp"
 #include "model/yaml_io.hpp"
 #include "view/editor_view.hpp"
@@ -72,8 +73,10 @@ std::unique_ptr<EditorView> g_view;
 std::string g_building_id;
 std::string g_server_url;
 std::string g_active_snapshot_dir;
+#ifdef __EMSCRIPTEN__
 bool g_snapshots_dirty = true;
 bool g_branches_dirty = true;
+#endif
 
 // Set when the map came from a .rmfmap bundle. Ctrl+S rewrites that file.
 std::string g_native_bundle_path;
@@ -243,7 +246,9 @@ bool g_locked = false;
 bool g_server_has_s3_secret = false;
 bool g_server_has_s3_access = false;
 // Desktop: closing a file returns to the launcher instead of quitting the app.
+#ifndef __EMSCRIPTEN__
 bool g_request_relaunch = false;
+#endif
 
 // Building picker mode once a backend is up: 0 = open existing, 1 = create new.
 int g_building_mode = 0;
@@ -279,7 +284,9 @@ std::string connection_summary() {
   return out;
 }
 // Browser only: a PUT is in flight and should be followed by a load.
+#ifdef __EMSCRIPTEN__
 bool g_pending_create = false;
+#endif
 std::string g_auto_building;
 
 struct FsEntry {
@@ -728,25 +735,9 @@ const char *imrmf_yjs_snapshot_yaml() { return imrmf_client_snapshot_yaml(); }
 void imrmf_yjs_push_local_yaml(const char *yaml) {
   imrmf_client_string_free(imrmf_client_push_yaml(yaml));
 }
-int imrmf_yjs_is_synced() { return imrmf_client_is_synced(); }
 
-// Snapshots and branches are still browser-only.
-void imrmf_call_list_snapshots(const char *, const char *) {}
-void imrmf_call_create_snapshot(const char *, const char *) {}
-void imrmf_call_load_snapshot_yaml(const char *, const char *, const char *) {}
-void imrmf_call_restore_snapshot(const char *, const char *, const char *) {}
-const char *imrmf_snap_result_code() { return nullptr; }
-const char *imrmf_snap_result_payload() { return nullptr; }
-const char *imrmf_snap_result_dir() { return nullptr; }
-void imrmf_snap_reset_result() {}
-void imrmf_call_list_branches(const char *) {}
-void imrmf_call_deploy_snapshot(const char *, const char *, const char *,
-                                const char *) {}
-void imrmf_call_deploy_latest(const char *, const char *, const char *) {}
-void imrmf_call_switch_branch(const char *, const char *) {}
-const char *imrmf_branch_result_code() { return nullptr; }
-const char *imrmf_branch_result_payload() { return nullptr; }
-void imrmf_branch_reset_result() {}
+// Snapshots, branches and sync state are browser-only, so the desktop build
+// has no counterpart for those EM_JS calls.
 
 #endif
 
@@ -759,6 +750,73 @@ void free_bridge_string(const char *s) {
 #endif
 }
 
+void commit_pending_edits();
+
+// Selections are indices into the current level, so anything that swaps the
+// map under the editor has to bring them back in range.
+void clamp_state_to_building() {
+  if (g_building.levels.empty())
+    return;
+  g_state.level_idx = std::max(
+      0, std::min(g_state.level_idx, (int)g_building.levels.size() - 1));
+  const auto &cur = g_building.levels[g_state.level_idx];
+  auto clamp_sel = [](std::vector<int> &sel, int n) {
+    sel.erase(std::remove_if(sel.begin(), sel.end(),
+                             [&](int i) { return i < 0 || i >= n; }),
+              sel.end());
+  };
+  clamp_sel(g_state.selected_vertices, (int)cur.vertices.size());
+  clamp_sel(g_state.selected_lanes, (int)cur.lanes.size());
+  clamp_sel(g_state.selected_walls, (int)cur.walls.size());
+  clamp_sel(g_state.selected_doors, (int)cur.doors.size());
+  clamp_sel(g_state.selected_measurements, (int)cur.measurements.size());
+  if (g_state.selected_floor >= (int)cur.floors.size())
+    g_state.selected_floor = -1;
+  if (g_state.selected_layer >= (int)cur.layers.size())
+    g_state.selected_layer = -1;
+  if (g_state.align_layer_idx >= (int)cur.layers.size())
+    g_state.align_layer_idx = -1;
+  if (g_state.pending_lane_start >= (int)cur.vertices.size())
+    g_state.pending_lane_start = -1;
+  if (g_state.pending_edge_start >= (int)cur.vertices.size())
+    g_state.pending_edge_start = -1;
+}
+
+// When the current burst of edits started. Zero while nothing is pending.
+double g_dirty_since = 0.0;
+
+double clock_seconds() {
+#ifdef __EMSCRIPTEN__
+  return emscripten_get_now() * 0.001;
+#else
+  return glfwGetTime();
+#endif
+}
+
+#ifndef __EMSCRIPTEN__
+// A file session keeps its undo stack in memory. With no peers to merge with,
+// the CRDT only bought it a full yaml round trip of the map per edit.
+imrmf::map_editor::EditHistory g_history;
+
+void commit_history() {
+  if (!g_state.dirty)
+    return;
+  g_history.commit(g_building);
+  g_state.dirty = false;
+  g_dirty_since = 0.0;
+}
+
+void history_undo() {
+  if (g_history.undo(g_building))
+    clamp_state_to_building();
+}
+
+void history_redo() {
+  if (g_history.redo(g_building))
+    clamp_state_to_building();
+}
+#endif
+
 void mirror_from_yjs() {
   if (!imrmf_yjs_remote_dirty())
     return;
@@ -767,6 +825,9 @@ void mirror_from_yjs() {
       ImGui::GetIO().WantTextInput) {
     return;
   }
+  // Mirroring replaces our copy, so a pending edit has to land first or the
+  // remote update erases it.
+  commit_pending_edits();
   const char *yaml = imrmf_yjs_snapshot_yaml();
   if (!yaml)
     return;
@@ -804,40 +865,9 @@ void mirror_from_yjs() {
           break;
         }
       }
-      g_state.level_idx =
-          found >= 0 ? found
-                     : std::max(0, std::min(g_state.level_idx,
-                                            (int)g_building.levels.size() - 1));
-      const auto &cur = g_building.levels[g_state.level_idx];
-      g_state.selected_vertices.erase(
-          std::remove_if(
-              g_state.selected_vertices.begin(),
-              g_state.selected_vertices.end(),
-              [&](int i) { return i < 0 || i >= (int)cur.vertices.size(); }),
-          g_state.selected_vertices.end());
-      g_state.selected_lanes.erase(
-          std::remove_if(
-              g_state.selected_lanes.begin(), g_state.selected_lanes.end(),
-              [&](int i) { return i < 0 || i >= (int)cur.lanes.size(); }),
-          g_state.selected_lanes.end());
-      auto clamp_sel = [](std::vector<int> &sel, int n) {
-        sel.erase(std::remove_if(sel.begin(), sel.end(),
-                                 [&](int i) { return i < 0 || i >= n; }),
-                  sel.end());
-      };
-      clamp_sel(g_state.selected_walls, (int)cur.walls.size());
-      clamp_sel(g_state.selected_doors, (int)cur.doors.size());
-      clamp_sel(g_state.selected_measurements, (int)cur.measurements.size());
-      if (g_state.selected_floor >= (int)cur.floors.size())
-        g_state.selected_floor = -1;
-      if (g_state.selected_layer >= (int)cur.layers.size())
-        g_state.selected_layer = -1;
-      if (g_state.align_layer_idx >= (int)cur.layers.size())
-        g_state.align_layer_idx = -1;
-      if (g_state.pending_lane_start >= (int)cur.vertices.size())
-        g_state.pending_lane_start = -1;
-      if (g_state.pending_edge_start >= (int)cur.vertices.size())
-        g_state.pending_edge_start = -1;
+      if (found >= 0)
+        g_state.level_idx = found;
+      clamp_state_to_building();
       g_state.dirty = false;
     }
   } catch (const std::exception &e) {
@@ -846,26 +876,48 @@ void mirror_from_yjs() {
   imrmf_yjs_clear_remote_dirty();
 }
 
-void push_to_yjs_if_dirty() {
+// A file session snapshots the edit, a server session pushes the map into the
+// shared document.
+void commit_pending_edits() {
   if (!g_state.dirty)
     return;
-  static double s_last_push = 0.0;
-#ifdef __EMSCRIPTEN__
-  const double now = emscripten_get_now() * 0.001;
-#else
-  const double now = glfwGetTime();
-#endif
-  const bool any_mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
-                              ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
-                              ImGui::IsMouseDown(ImGuiMouseButton_Right);
-  if (any_mouse_down && (now - s_last_push) < 0.2)
+#ifndef __EMSCRIPTEN__
+  if (g_serverless_session) {
+    commit_history();
     return;
+  }
+#endif
   std::string yaml = imrmf::map_editor::serialize_building(g_building);
   imrmf_yjs_push_local_yaml(yaml.c_str());
-  s_last_push = now;
   g_state.dirty = false;
+  g_dirty_since = 0.0;
 }
 
+// Recording costs a snapshot or a yaml round trip, so it waits for the burst
+// to settle rather than running in the frame the edit lands in. A drag then
+// costs one step, not one per frame.
+void commit_pending_edits_if_settled() {
+  if (!g_state.dirty) {
+    g_dirty_since = 0.0;
+    return;
+  }
+  const double now = clock_seconds();
+  if (g_dirty_since == 0.0)
+    g_dirty_since = now;
+
+  constexpr double kSettle = 0.12;  // quiet before a push
+  constexpr double kMaxHold = 0.75; // but a long drag still syncs as it runs
+  const bool editing = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                       ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+                       ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+                       ImGui::GetIO().WantTextInput;
+  const double held = now - g_dirty_since;
+  if (held < (editing ? kMaxHold : kSettle))
+    return;
+  commit_pending_edits();
+}
+
+#ifdef __EMSCRIPTEN__
 void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
   try {
     g_snapshot_building = imrmf::map_editor::parse_building(yaml);
@@ -890,6 +942,7 @@ void exit_snapshot_mode() {
   imrmf::map_editor::set_yjs_readonly(false);
   g_state.snapshot_status.clear();
 }
+#endif
 
 void issue_snapshot_requests() {
 #ifdef __EMSCRIPTEN__
@@ -929,8 +982,8 @@ void issue_snapshot_requests() {
 #endif
 }
 
-void poll_snapshot_result() {
 #ifdef __EMSCRIPTEN__
+void poll_snapshot_result() {
   const char *code_c = imrmf_snap_result_code();
   if (!code_c)
     return;
@@ -980,8 +1033,8 @@ void poll_snapshot_result() {
     g_state.snapshot_status = "error: " + payload;
   }
   imrmf_snap_reset_result();
-#endif
 }
+#endif
 
 void issue_branch_requests() {
 #ifdef __EMSCRIPTEN__
@@ -1029,8 +1082,8 @@ void issue_branch_requests() {
 #endif
 }
 
-void poll_branch_result() {
 #ifdef __EMSCRIPTEN__
+void poll_branch_result() {
   const char *code_c = imrmf_branch_result_code();
   if (!code_c)
     return;
@@ -1066,8 +1119,8 @@ void poll_branch_result() {
     g_state.deploy_status = "error: " + payload;
   }
   imrmf_branch_reset_result();
-#endif
 }
+#endif
 
 // A new map is one empty level, so the editor has somewhere to draw.
 std::string starter_building_yaml(const std::string &name) {
@@ -1509,6 +1562,7 @@ void poll_async_result() {
 }
 
 void disconnect_and_reset() {
+  commit_pending_edits();
   imrmf_session_clear();
   imrmf_call_disconnect(g_server_url.c_str());
   // g_locked stays, since the server still rejects /mount in single-mount mode.
@@ -1726,15 +1780,11 @@ bool read_file_bytes(const fs::path &p, std::vector<unsigned char> *out) {
 }
 
 // Takes a *.building.yaml or a directory holding one.
-// A file session has no server, so its undo stack lives in a doc the client
-// keeps locally. Without it, undo is dead for any map opened from disk.
+// A file session has no server and no peers, so undo rewinds snapshots in
+// memory rather than a CRDT document.
 void start_local_undo_session() {
-  const std::string yaml = imrmf::map_editor::serialize_building(g_building);
-  std::string payload;
-  if (!take_client_result(imrmf_client_start_local_session(yaml.c_str()),
-                          &payload)) {
-    g_state.status_message = "undo unavailable: " + payload;
-  }
+  imrmf_client_disconnect();
+  g_history.reset(g_building);
 }
 
 bool native_open_local(const std::string &path) {
@@ -2034,6 +2084,7 @@ bool native_write_bundle(const std::string &path) {
 }
 
 void reset_for_relaunch() {
+  commit_pending_edits();
   g_view.reset();
   g_building = {};
   g_snapshot_building = {};
@@ -2053,6 +2104,9 @@ void reset_for_relaunch() {
 }
 
 void native_save() {
+  // Saving clears the dirty flag, so a pending edit has to be recorded first
+  // or undo would rewind past it.
+  commit_pending_edits();
   if (!g_native_bundle_path.empty()) {
     if (native_write_bundle(g_native_bundle_path))
       g_state.dirty = false;
@@ -2985,6 +3039,7 @@ void draw_open_dialog_body() {
 }
 
 // Floating version, for the browser where the dialog sits over the page.
+#ifdef __EMSCRIPTEN__
 void draw_connection_modal() {
   if (!ImGui::IsPopupOpen("Open a building##imrmf"))
     ImGui::OpenPopup("Open a building##imrmf");
@@ -2996,6 +3051,7 @@ void draw_connection_modal() {
     ImGuiWidgets::EndModal();
   }
 }
+#endif
 
 void draw_busy(const char *label) {
   ImVec2 center = ImGui::GetMainViewport()->GetCenter();
@@ -3103,6 +3159,15 @@ imrmf::map_editor::TopBarHooks build_top_bar_hooks() {
 #endif
   h.has_server = !g_serverless_session;
   h.dirty = g_state.dirty;
+  h.on_flush_edits = []() { commit_pending_edits(); };
+#ifndef __EMSCRIPTEN__
+  if (g_serverless_session) {
+    h.can_undo = []() { return g_history.can_undo(); };
+    h.can_redo = []() { return g_history.can_redo(); };
+    h.on_undo = []() { history_undo(); };
+    h.on_redo = []() { history_redo(); };
+  }
+#endif
 #ifndef __EMSCRIPTEN__
   // Only a session backed by a real file can be re-saved to it.
   if (!g_native_bundle_path.empty() || !g_native_yaml_path.empty())
@@ -3146,13 +3211,9 @@ void frame() {
 #endif
 
   if (g_phase == ConnPhase::Connected) {
-    // A file session has no server but still has a doc for undo to rewind, so
-    // it mirrors and pushes like a mounted one. The browser has neither.
-#ifdef __EMSCRIPTEN__
+    // A file session has no document. Undo is in memory, and there is no peer
+    // to mirror from.
     const bool has_doc = !g_serverless_session;
-#else
-    const bool has_doc = true;
-#endif
     if (has_doc)
       mirror_from_yjs();
     // Snapshots and branches are the server's, and there is none.
@@ -3188,8 +3249,8 @@ void frame() {
     draw_save_bundle_modal();
 #endif
     ImGui::End();
-    if (g_state.snapshot_dir.empty() && has_doc)
-      push_to_yjs_if_dirty();
+    if (g_state.snapshot_dir.empty())
+      commit_pending_edits_if_settled();
   }
 #ifdef __EMSCRIPTEN__
   // Desktop picks its building in the launcher, so it arrives here connected.
@@ -3241,10 +3302,13 @@ void init_backends(GLFWwindow *win) {
 #endif
 }
 
+// The browser page lives as long as the tab, so only the desktop tears down.
+#ifndef __EMSCRIPTEN__
 void shutdown_backends() {
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
 }
+#endif
 
 #ifndef __EMSCRIPTEN__
 

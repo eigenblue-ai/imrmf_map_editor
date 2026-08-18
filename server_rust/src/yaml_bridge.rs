@@ -30,26 +30,118 @@ pub fn seed_doc_with_origin<O: Into<yrs::Origin>>(
 }
 
 fn seed_in_txn(root: &yrs::MapRef, txn: &mut yrs::TransactionMut, yaml_text: &str) -> Result<()> {
-    let keys: Vec<String> = root.iter(txn).map(|(k, _)| k.to_string()).collect();
-    for k in keys {
-        root.remove(txn, &k);
-    }
     if yaml_text.trim().is_empty() {
+        clear_map(txn, root);
         return Ok(());
     }
 
     let value: serde_yaml::Value = serde_yaml::from_str(yaml_text)?;
     match value {
-        serde_yaml::Value::Null => Ok(()),
-        serde_yaml::Value::Mapping(map) => {
-            for (k, v) in map {
-                let Some(key) = k.as_str() else { continue };
-                insert_value_into_map(txn, root, key, &v)?;
+        serde_yaml::Value::Null => {
+            clear_map(txn, root);
+            Ok(())
+        }
+        serde_yaml::Value::Mapping(map) => merge_mapping(txn, root, &map),
+        _ => Err(anyhow!("building.yaml root must be a mapping")),
+    }
+}
+
+fn clear_map(txn: &mut TransactionMut, map: &MapRef) {
+    let keys: Vec<String> = map.iter(txn).map(|(k, _)| k.to_string()).collect();
+    for k in keys {
+        map.remove(txn, &k);
+    }
+}
+
+/// Reconciles the doc against `src` in place rather than dropping every key and
+/// rebuilding. An editor pushes the whole map back after each edit, so a rebuild
+/// made one moved vertex cost a delete and reinsert of the entire building, and
+/// an update the size of the map. Merging touches only what changed.
+fn merge_mapping(txn: &mut TransactionMut, map: &MapRef, src: &serde_yaml::Mapping) -> Result<()> {
+    let stale: Vec<String> = map
+        .iter(txn)
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !src.contains_key(serde_yaml::Value::String(k.clone())))
+        .collect();
+    for k in stale {
+        map.remove(txn, &k);
+    }
+    for (k, v) in src {
+        let Some(key) = k.as_str() else { continue };
+        merge_into_map(txn, map, key, v)?;
+    }
+    Ok(())
+}
+
+fn merge_into_map(
+    txn: &mut TransactionMut,
+    map: &MapRef,
+    key: &str,
+    value: &serde_yaml::Value,
+) -> Result<()> {
+    match (map.get(txn, key), value) {
+        (Some(Out::YMap(existing)), serde_yaml::Value::Mapping(sub)) => {
+            merge_mapping(txn, &existing, sub)
+        }
+        (Some(Out::YArray(existing)), serde_yaml::Value::Sequence(seq)) => {
+            merge_array(txn, &existing, seq)
+        }
+        (Some(Out::Any(current)), scalar) if !is_container(scalar) => {
+            let any = yaml_scalar_to_any(scalar);
+            if current != any {
+                map.insert(txn, key, any);
             }
             Ok(())
         }
-        _ => Err(anyhow!("building.yaml root must be a mapping")),
+        // Absent, or the shape changed: write it fresh.
+        _ => insert_value_into_map(txn, map, key, value),
     }
+}
+
+/// Positional reconcile: entry i merges against entry i, and the tail is pushed
+/// or trimmed. Vertices and lanes are appended, so an added row costs one push.
+/// A row dropped from the middle rewrites the rows after it, still far less than
+/// rewriting the array.
+fn merge_array(txn: &mut TransactionMut, arr: &ArrayRef, seq: &[serde_yaml::Value]) -> Result<()> {
+    let have = arr.len(txn) as usize;
+    for (i, v) in seq.iter().enumerate() {
+        if i >= have {
+            push_value_into_array(txn, arr, v)?;
+            continue;
+        }
+        let idx = i as u32;
+        match (arr.get(txn, idx), v) {
+            (Some(Out::YMap(existing)), serde_yaml::Value::Mapping(sub)) => {
+                merge_mapping(txn, &existing, sub)?
+            }
+            (Some(Out::YArray(existing)), serde_yaml::Value::Sequence(sub)) => {
+                merge_array(txn, &existing, sub)?
+            }
+            (Some(Out::Any(current)), scalar) if !is_container(scalar) => {
+                let any = yaml_scalar_to_any(scalar);
+                if current != any {
+                    arr.remove(txn, idx);
+                    arr.insert(txn, idx, any);
+                }
+            }
+            // Absent, or the shape changed: write it fresh.
+            _ => {
+                arr.remove(txn, idx);
+                insert_value_into_array(txn, arr, idx, v)?;
+            }
+        }
+    }
+    if have > seq.len() {
+        arr.remove_range(txn, seq.len() as u32, (have - seq.len()) as u32);
+    }
+    Ok(())
+}
+
+fn is_container(value: &serde_yaml::Value) -> bool {
+    matches!(
+        value,
+        serde_yaml::Value::Mapping(_) | serde_yaml::Value::Sequence(_)
+    )
 }
 
 pub fn serialize_doc<T: ReadTxn>(txn: &T) -> Result<String> {
@@ -115,6 +207,33 @@ fn push_value_into_array(
         }
         scalar => {
             arr.push_back(txn, yaml_scalar_to_any(scalar));
+        }
+    }
+    Ok(())
+}
+
+fn insert_value_into_array(
+    txn: &mut TransactionMut,
+    arr: &ArrayRef,
+    index: u32,
+    value: &serde_yaml::Value,
+) -> Result<()> {
+    match value {
+        serde_yaml::Value::Mapping(sub) => {
+            let inserted: MapRef = arr.insert(txn, index, MapPrelim::default());
+            for (k, v) in sub {
+                let Some(sub_key) = k.as_str() else { continue };
+                insert_value_into_map(txn, &inserted, sub_key, v)?;
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            let inserted: ArrayRef = arr.insert(txn, index, ArrayPrelim::default());
+            for v in seq {
+                push_value_into_array(txn, &inserted, v)?;
+            }
+        }
+        scalar => {
+            arr.insert(txn, index, yaml_scalar_to_any(scalar));
         }
     }
     Ok(())
@@ -238,5 +357,128 @@ levels:
         let original: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let echoed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(original, echoed);
+    }
+
+    fn dump(doc: &Doc) -> serde_yaml::Value {
+        let txn = doc.transact();
+        serde_yaml::from_str(&serialize_doc(&txn).unwrap()).unwrap()
+    }
+
+    const BASE: &str = r#"
+name: example
+levels:
+  L1:
+    elevation: 0
+    drawing:
+      filename: floorplan.png
+    vertices:
+      - [1, 2, 0, "a"]
+      - [3, 4, 0, "b"]
+    lanes:
+      - [0, 1, {bidirectional: [4, false]}]
+"#;
+
+    #[test]
+    fn reseeding_reaches_the_new_state() {
+        // Every shape of change the editor can push: a scalar edited, a row
+        // appended, a row dropped, a key removed, and a key whose type flipped.
+        let cases = [
+            BASE.replace("[1, 2, 0, \"a\"]", "[9, 2, 0, \"a\"]"),
+            BASE.replace(
+                "      - [3, 4, 0, \"b\"]\n",
+                "      - [3, 4, 0, \"b\"]\n      - [5, 6, 0, \"c\"]\n",
+            ),
+            BASE.replace("      - [3, 4, 0, \"b\"]\n", ""),
+            BASE.replace("    drawing:\n      filename: floorplan.png\n", ""),
+            BASE.replace("    elevation: 0", "    elevation: [1, 2]"),
+            BASE.replace("elevation: 0", "elevation: 0\n    layers: []"),
+        ];
+        for next in cases {
+            let doc = Doc::new();
+            seed_doc(&doc, BASE).unwrap();
+            seed_doc(&doc, &next).unwrap();
+            let want: serde_yaml::Value = serde_yaml::from_str(&next).unwrap();
+            assert_eq!(dump(&doc), want, "after reseeding with:\n{next}");
+        }
+    }
+
+    #[test]
+    fn an_unchanged_reseed_is_a_no_op() {
+        let doc = Doc::new();
+        seed_doc(&doc, BASE).unwrap();
+        let before = doc.transact().state_vector();
+        seed_doc(&doc, BASE).unwrap();
+        // An update carrying nothing is still a two byte envelope.
+        let update = doc.transact().encode_state_as_update_v1(&before);
+        assert!(update.len() <= 2, "reseed emitted {} bytes", update.len());
+    }
+
+    // Two clients on one document, each pushing the whole yaml back after its
+    // own edit, as the desktop client does. A reseed that rebuilt the tree made
+    // each push delete what the other peer had just written. Merging in place
+    // keeps both edits and leaves the two docs identical.
+    #[test]
+    fn concurrent_pushes_from_two_peers_both_survive() {
+        use yrs::updates::decoder::Decode;
+        use yrs::Update;
+
+        let a = Doc::new();
+        seed_doc(&a, BASE).unwrap();
+        let b = Doc::new();
+        {
+            let update = a.transact().encode_state_as_update_v1(&Default::default());
+            let mut txn = b.transact_mut();
+            txn.apply_update(Update::decode_v1(&update).unwrap())
+                .unwrap();
+        }
+
+        // A renames the first vertex, B the second, neither having seen the
+        // other's edit yet.
+        let sv_a = a.transact().state_vector();
+        seed_doc(&a, &BASE.replace("\"a\"", "\"a2\"")).unwrap();
+        let from_a = a.transact().encode_state_as_update_v1(&sv_a);
+
+        let sv_b = b.transact().state_vector();
+        seed_doc(&b, &BASE.replace("\"b\"", "\"b2\"")).unwrap();
+        let from_b = b.transact().encode_state_as_update_v1(&sv_b);
+
+        b.transact_mut()
+            .apply_update(Update::decode_v1(&from_a).unwrap())
+            .unwrap();
+        a.transact_mut()
+            .apply_update(Update::decode_v1(&from_b).unwrap())
+            .unwrap();
+
+        assert_eq!(dump(&a), dump(&b), "peers diverged");
+        let merged = serde_yaml::to_string(&dump(&a)).unwrap();
+        assert!(merged.contains("a2"), "lost A's edit:\n{merged}");
+        assert!(merged.contains("b2"), "lost B's edit:\n{merged}");
+    }
+
+    #[test]
+    fn one_edit_costs_far_less_than_the_map() {
+        // A vertex moved on a map of 500 used to resend the whole document.
+        let map = |bump: i32| {
+            let mut y = String::from("name: b\nlevels:\n  L1:\n    elevation: 0\n    vertices:\n");
+            for i in 0..500 {
+                let x = if i == 0 { bump } else { i };
+                y.push_str(&format!("      - [{x}, {i}, 0, \"v{i}\"]\n"));
+            }
+            y
+        };
+        let doc = Doc::new();
+        seed_doc(&doc, &map(0)).unwrap();
+        let whole = doc
+            .transact()
+            .encode_state_as_update_v1(&Default::default());
+        let before = doc.transact().state_vector();
+        seed_doc(&doc, &map(7)).unwrap();
+        let update = doc.transact().encode_state_as_update_v1(&before);
+        assert!(
+            update.len() * 50 < whole.len(),
+            "one moved vertex sent {}B against a {}B map",
+            update.len(),
+            whole.len()
+        );
     }
 }
