@@ -10,6 +10,7 @@
 
 #include "ui/font.hpp"
 #include "ui/icons.hpp"
+#include "ui/notifications.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -254,7 +255,6 @@ void note_mounted_branch() {
 // Attached, which is not the same as holding anything. Read off the building
 // list, an empty backend looked unmounted and could never be filled.
 bool g_backend_mounted = false;
-std::string g_error_message;
 
 bool g_locked = false;
 // The server holds a credential we can fall back to, so the form needs none.
@@ -274,7 +274,6 @@ bool g_create_from_file = false;
 // read, so a mislabelled extension cannot steer it.
 int g_create_format_idx = 0;
 char g_create_source[512] = "";
-std::string g_create_status;
 // The picked file's bytes in the browser, where there is no path to re-read.
 std::vector<unsigned char> g_create_bytes;
 
@@ -318,7 +317,6 @@ struct FsBrowser {
   std::vector<FsEntry> entries;
   bool loading = false;
   bool requested_once = false;
-  std::string error;
 };
 FsBrowser g_fs;
 
@@ -937,7 +935,8 @@ void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
   try {
     g_snapshot_building = imrmf::map_editor::parse_building(yaml);
   } catch (const std::exception &e) {
-    g_state.snapshot_status = std::string("parse failed: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("parse failed: ") + e.what());
     return;
   }
   g_state.snapshot_dir = dir;
@@ -945,7 +944,6 @@ void enter_snapshot_mode(const std::string &dir, const std::string &yaml) {
   if (g_view)
     g_view->apply_snapshot_dir(dir);
   imrmf::map_editor::set_yjs_readonly(true);
-  g_state.snapshot_status = "viewing " + dir;
 }
 
 void exit_snapshot_mode() {
@@ -955,7 +953,6 @@ void exit_snapshot_mode() {
   if (g_view)
     g_view->apply_snapshot_dir("");
   imrmf::map_editor::set_yjs_readonly(false);
-  g_state.snapshot_status.clear();
 }
 #endif
 
@@ -973,13 +970,13 @@ void issue_snapshot_requests() {
   }
   if (g_state.snapshot_request_create) {
     g_state.snapshot_request_create = false;
-    g_state.snapshot_status = "creating...";
+    ImGuiWidgets::Notify(theme::Signal::info, "taking a snapshot...");
     rmf_call_create_snapshot(g_server_url.c_str(), g_building_id.c_str());
   }
   if (!g_state.snapshot_request_load.empty()) {
     std::string dir = g_state.snapshot_request_load;
     g_state.snapshot_request_load.clear();
-    g_state.snapshot_status = "loading " + dir + "...";
+    ImGuiWidgets::Notify(theme::Signal::info, "loading " + dir + "...");
     rmf_call_load_snapshot_yaml(g_server_url.c_str(), g_building_id.c_str(),
                                 dir.c_str());
   }
@@ -990,7 +987,7 @@ void issue_snapshot_requests() {
   if (!g_state.snapshot_request_restore.empty()) {
     std::string dir = g_state.snapshot_request_restore;
     g_state.snapshot_request_restore.clear();
-    g_state.snapshot_status = "restoring " + dir + "...";
+    ImGuiWidgets::Notify(theme::Signal::info, "restoring " + dir + "...");
     rmf_call_restore_snapshot(g_server_url.c_str(), g_building_id.c_str(),
                               dir.c_str());
   }
@@ -1032,7 +1029,7 @@ void poll_snapshot_result() {
     } catch (...) {
     }
   } else if (code == "created") {
-    g_state.snapshot_status = "snapshot created";
+    ImGuiWidgets::Notify(theme::Signal::success, "snapshot created");
     g_snapshots_dirty = true;
   } else if (code == "yaml") {
     const char *dir_c = rmf_snap_result_dir();
@@ -1042,10 +1039,11 @@ void poll_snapshot_result() {
     if (!dir.empty())
       enter_snapshot_mode(dir, payload);
   } else if (code == "restored") {
-    g_state.snapshot_status = "restored from " + payload;
+    ImGuiWidgets::Notify(theme::Signal::success, "restored from " + payload);
     exit_snapshot_mode();
   } else if (code == "err") {
-    g_state.snapshot_status = "error: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         payload.empty() ? "snapshot failed" : payload);
   }
   rmf_snap_reset_result();
 }
@@ -1069,14 +1067,16 @@ void issue_branch_requests() {
     std::string dir = g_state.deploy_request_dir;
     g_state.deploy_request_to.clear();
     g_state.deploy_request_dir.clear();
-    g_state.deploy_status = "deploying " + dir + " to " + to + "...";
+    ImGuiWidgets::Notify(theme::Signal::info,
+                         "deploying " + dir + " to " + to + "...");
     rmf_call_deploy_snapshot(g_server_url.c_str(), g_building_id.c_str(),
                              dir.c_str(), to.c_str());
   }
   if (!g_state.deploy_latest_to.empty()) {
     std::string to = g_state.deploy_latest_to;
     g_state.deploy_latest_to.clear();
-    g_state.deploy_status = "deploying latest to " + to + "...";
+    ImGuiWidgets::Notify(theme::Signal::info,
+                         "deploying latest to " + to + "...");
     rmf_call_deploy_latest(g_server_url.c_str(), g_building_id.c_str(),
                            to.c_str());
   }
@@ -1129,10 +1129,12 @@ void poll_branch_result() {
     } catch (...) {
     }
   } else if (code == "deployed") {
-    g_state.deploy_status = payload.empty() ? "deployed" : payload;
+    ImGuiWidgets::Notify(theme::Signal::success,
+                         payload.empty() ? "deployed" : payload);
     g_branches_dirty = true;
   } else if (code == "err") {
-    g_state.deploy_status = "error: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         payload.empty() ? "deploy failed" : payload);
   }
   rmf_branch_reset_result();
 }
@@ -1425,7 +1427,6 @@ void try_restore_session() {
 
 void start_fs_list(const std::string &path) {
   g_fs.loading = true;
-  g_fs.error.clear();
   rmf_fs_reset_result();
   std::string server =
       g_form.server_url[0] ? std::string(g_form.server_url) : std::string();
@@ -1492,7 +1493,10 @@ void poll_fs_result() {
     return;
   std::string payload = take_string(rmf_fs_result_payload());
   if (code == "err") {
-    g_fs.error = payload.empty() ? "fs list failed" : payload;
+    ImGuiWidgets::Notify(
+        theme::Signal::danger,
+        "could not list files: " +
+            (payload.empty() ? std::string("unknown error") : payload));
     g_fs.loading = false;
     rmf_fs_reset_result();
     return;
@@ -1518,7 +1522,8 @@ void poll_async_result() {
       rmf_reset_result();
       return;
     }
-    g_error_message = payload.empty() ? "unknown error" : payload;
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         payload.empty() ? "unknown error" : payload);
     g_phase = ConnPhase::Error;
     g_pending_create = false;
     rmf_reset_result();
@@ -1548,7 +1553,6 @@ void poll_async_result() {
     g_branches_dirty = true;
     if (g_buildings.empty()) {
       // Nothing to open is not an error, it is a new backend.
-      g_error_message.clear();
       g_phase = ConnPhase::Mounted;
     } else {
       g_phase = ConnPhase::Mounted;
@@ -1596,7 +1600,6 @@ void disconnect_and_reset() {
   g_building_id.clear();
   g_buildings.clear();
   g_backend_mounted = false;
-  g_error_message.clear();
   g_snapshots_dirty = true;
   g_branches_dirty = true;
 }
@@ -1627,10 +1630,10 @@ void native_fs_list(const std::string &path) {
   std::error_code ec;
   fs::path dir = path.empty() ? fs::current_path(ec) : fs::path(path);
   if (!fs::is_directory(dir, ec)) {
-    g_fs.error = "not a directory: " + dir.string();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "not a directory: " + dir.string());
     return;
   }
-  g_fs.error.clear();
   g_fs.current_path = dir.string();
   g_fs.parent_path = dir.has_parent_path() && dir.parent_path() != dir
                          ? dir.parent_path().string()
@@ -1701,7 +1704,8 @@ void start_list_buildings() {
   std::string payload;
   if (!take_client_result(rmf_client_list_buildings(g_server_url.c_str()),
                           &payload)) {
-    g_error_message = "could not list buildings: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "could not list buildings: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -1720,7 +1724,7 @@ void start_mount() {
   if (!take_client_result(rmf_client_mount(g_server_url.c_str(),
                                            build_mount_json(g_form).c_str()),
                           &payload)) {
-    g_error_message = "mount failed: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger, "mount failed: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -1744,13 +1748,11 @@ void take_building_ids(const std::string &payload) {
   if (g_form.kind_idx == 1 && g_form.s3_branch[0] == '\0')
     native_probe_server_config();
   if (g_buildings.empty()) {
-    g_error_message.clear();
     g_phase = ConnPhase::Mounted;
     return;
   }
   if (g_building_id.empty())
     g_building_id = g_buildings.front();
-  g_error_message.clear();
   g_phase = ConnPhase::Mounted;
 }
 
@@ -1773,7 +1775,7 @@ void start_load_building() {
   if (!take_client_result(
           rmf_client_load_building(g_server_url.c_str(), g_building_id.c_str()),
           &payload)) {
-    g_error_message = "load failed: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger, "load failed: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -1781,7 +1783,7 @@ void start_load_building() {
           rmf_client_connect(
               websocket_url(g_server_url, g_building_id).c_str()),
           &payload)) {
-    g_error_message = "connect failed: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger, "connect failed: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -1797,7 +1799,6 @@ void start_load_building() {
   g_state.branch = branch;
   g_view = std::make_unique<EditorView>(make_server_texture_provider(),
                                         g_building_id);
-  g_error_message.clear();
   g_phase = ConnPhase::Connected;
 }
 
@@ -1831,7 +1832,8 @@ bool native_open_local(const std::string &path) {
       }
     }
     if (found.empty()) {
-      g_error_message = "no *.building.yaml in " + p.string();
+      ImGuiWidgets::Notify(theme::Signal::danger,
+                           "no *.building.yaml in " + p.string());
       return false;
     }
     p = found;
@@ -1839,7 +1841,7 @@ bool native_open_local(const std::string &path) {
 
   std::ifstream in(p);
   if (!in) {
-    g_error_message = "cannot read " + p.string();
+    ImGuiWidgets::Notify(theme::Signal::danger, "cannot read " + p.string());
     return false;
   }
   std::string body((std::istreambuf_iterator<char>(in)),
@@ -1848,7 +1850,8 @@ bool native_open_local(const std::string &path) {
   try {
     g_building = imrmf::map_editor::parse_building(body);
   } catch (const std::exception &e) {
-    g_error_message = std::string("parse failed: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("parse failed: ") + e.what());
     return false;
   }
 
@@ -1868,7 +1871,6 @@ bool native_open_local(const std::string &path) {
   g_view = std::make_unique<EditorView>(
       std::make_unique<mecanvas::StbTextureProvider>(base), g_building_id);
   start_local_undo_session();
-  g_error_message.clear();
   g_phase = ConnPhase::Connected;
   return true;
 }
@@ -1878,7 +1880,7 @@ bool native_open_bundle(const std::string &path) {
   fs::path p(path);
   std::vector<unsigned char> bytes;
   if (!read_file_bytes(p, &bytes) || bytes.empty()) {
-    g_error_message = "cannot read " + p.string();
+    ImGuiWidgets::Notify(theme::Signal::danger, "cannot read " + p.string());
     return false;
   }
 
@@ -1886,7 +1888,8 @@ bool native_open_bundle(const std::string &path) {
   try {
     bundle = imrmf::map_editor::read_bundle(bytes.data(), bytes.size());
   } catch (const std::exception &e) {
-    g_error_message = std::string("not a usable map bundle: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("not a usable map bundle: ") + e.what());
     return false;
   }
 
@@ -1911,10 +1914,10 @@ bool native_open_bundle(const std::string &path) {
   g_view = std::make_unique<EditorView>(std::move(provider), g_building_id);
   start_local_undo_session();
 
-  g_error_message.clear();
   if (!bundle.missing.empty()) {
-    g_state.status_message = std::to_string(bundle.missing.size()) +
-                             " image(s) missing from the bundle";
+    ImGuiWidgets::Notify(theme::Signal::warning,
+                         std::to_string(bundle.missing.size()) +
+                             " image(s) missing from the bundle");
   }
   g_phase = ConnPhase::Connected;
   return true;
@@ -1928,14 +1931,15 @@ bool native_create_local(const std::string &path) {
     p /= p.filename().string() + ".building.yaml";
     // The save panel asks about replacing a file, this path has nothing to ask.
     if (fs::exists(p, ec)) {
-      g_error_message = p.string() + " already exists";
+      ImGuiWidgets::Notify(theme::Signal::danger,
+                           p.string() + " already exists");
       return false;
     }
   }
 
   std::ofstream out(p, std::ios::trunc);
   if (!out) {
-    g_error_message = "cannot create " + p.string();
+    ImGuiWidgets::Notify(theme::Signal::danger, "cannot create " + p.string());
     return false;
   }
   out << starter_building_yaml(p.stem().stem().string());
@@ -1951,7 +1955,7 @@ bool native_create_bundle(const std::string &path) {
   if (!looks_like_map_bundle(p))
     p += imrmf::map_editor::kBundleExtension;
   if (fs::exists(p, ec) && !has_native_file_picker()) {
-    g_error_message = p.string() + " already exists";
+    ImGuiWidgets::Notify(theme::Signal::danger, p.string() + " already exists");
     return false;
   }
 
@@ -1965,13 +1969,15 @@ bool native_create_bundle(const std::string &path) {
         imrmf::map_editor::write_bundle(bundle);
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
     if (!out) {
-      g_error_message = "cannot create " + p.string();
+      ImGuiWidgets::Notify(theme::Signal::danger,
+                           "cannot create " + p.string());
       return false;
     }
     out.write(reinterpret_cast<const char *>(bytes.data()),
               (std::streamsize)bytes.size());
   } catch (const std::exception &e) {
-    g_error_message = std::string("create failed: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("create failed: ") + e.what());
     return false;
   }
   return native_open_bundle(p.string());
@@ -1984,7 +1990,7 @@ void start_create_building(const std::string &id) {
           rmf_client_put_building(g_server_url.c_str(), id.c_str(),
                                   starter_building_yaml(id).c_str()),
           &payload)) {
-    g_error_message = "create failed: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger, "create failed: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -1997,38 +2003,41 @@ void start_create_building(const std::string &id) {
 void native_create_building_from_file(const std::string &id,
                                       const std::string &path) {
   if (!building_id_is_valid(id)) {
-    g_error_message = "name must be letters, digits, - or _ (max 64)";
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "name must be letters, digits, - or _ (max 64)");
     return;
   }
   if (std::find(g_buildings.begin(), g_buildings.end(), id) !=
       g_buildings.end()) {
-    g_error_message = "\"" + id + "\" already exists on this backend";
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "\"" + id + "\" already exists on this backend");
     return;
   }
 
   fs::path p(path);
   std::error_code ec;
   if (path.empty() || !fs::is_regular_file(p, ec)) {
-    g_error_message = "pick a building.yaml or a map bundle first";
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "pick a building.yaml or a map bundle first");
     return;
   }
   std::vector<unsigned char> bytes;
   if (!read_file_bytes(p, &bytes)) {
-    g_error_message = "cannot read " + path;
+    ImGuiWidgets::Notify(theme::Signal::danger, "cannot read " + path);
     return;
   }
 
   const bool want_bundle = g_create_format_idx == 1;
   if (want_bundle != looks_like_map_bundle(p)) {
-    g_error_message = want_bundle
-                          ? "that is not a .rmfmap, switch Format to "
-                            "building.yaml"
-                          : "that is a .rmfmap, switch Format to Full map";
+    ImGuiWidgets::Notify(
+        theme::Signal::danger,
+        want_bundle ? "that is not a .rmfmap, switch Format to building.yaml"
+                    : "that is a .rmfmap, switch Format to Full map");
     return;
   }
   const MapSource src = read_map_source(bytes, want_bundle);
   if (!src.ok) {
-    g_error_message = src.error;
+    ImGuiWidgets::Notify(theme::Signal::danger, src.error);
     return;
   }
 
@@ -2037,7 +2046,7 @@ void native_create_building_from_file(const std::string &id,
   if (!take_client_result(rmf_client_put_building(g_server_url.c_str(),
                                                   id.c_str(), src.yaml.c_str()),
                           &payload)) {
-    g_error_message = "create failed: " + payload;
+    ImGuiWidgets::Notify(theme::Signal::danger, "create failed: " + payload);
     g_phase = ConnPhase::Error;
     return;
   }
@@ -2058,19 +2067,22 @@ void native_create_building_from_file(const std::string &id,
   }
 
   g_building_id = id;
-  g_create_status.clear();
-  g_state.status_message =
-      failed ? "created " + id + ", " + std::to_string(failed) +
-                   " image(s) failed to upload"
-             : (uploaded ? "created " + id + " with " +
-                               std::to_string(uploaded) + " image(s)"
-                         : "created " + id);
+  if (failed) {
+    ImGuiWidgets::Notify(theme::Signal::warning,
+                         "created " + id + ", " + std::to_string(failed) +
+                             " image(s) failed to upload");
+  } else {
+    ImGuiWidgets::Notify(theme::Signal::success,
+                         uploaded ? "created " + id + " with " +
+                                        std::to_string(uploaded) + " image(s)"
+                                  : "created " + id);
+  }
   start_load_building();
 }
 
 bool native_write_bundle(const std::string &path) {
   if (!g_view) {
-    g_error_message = "nothing to save";
+    ImGuiWidgets::Notify(theme::Signal::danger, "nothing to save");
     return false;
   }
   mecanvas::TextureProvider *provider = g_view->texture_provider();
@@ -2083,7 +2095,8 @@ bool native_write_bundle(const std::string &path) {
   try {
     bytes = imrmf::map_editor::write_bundle(bundle);
   } catch (const std::exception &e) {
-    g_error_message = std::string("pack failed: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("pack failed: ") + e.what());
     return false;
   }
 
@@ -2093,23 +2106,26 @@ bool native_write_bundle(const std::string &path) {
 
   std::ofstream out(p, std::ios::binary | std::ios::trunc);
   if (!out) {
-    g_error_message = "cannot write " + p.string();
+    ImGuiWidgets::Notify(theme::Signal::danger, "cannot write " + p.string());
     return false;
   }
   out.write(reinterpret_cast<const char *>(bytes.data()),
             (std::streamsize)bytes.size());
   if (!out) {
-    g_error_message = "write failed: " + p.string();
+    ImGuiWidgets::Notify(theme::Signal::danger, "write failed: " + p.string());
     return false;
   }
   out.close();
 
-  g_state.status_message = bundle.missing.empty()
-                               ? "saved " + p.filename().string()
-                               : "saved " + p.filename().string() + " — " +
-                                     std::to_string(bundle.missing.size()) +
-                                     " image(s) missing";
-  g_error_message.clear();
+  if (bundle.missing.empty()) {
+    ImGuiWidgets::Notify(theme::Signal::success,
+                         "saved " + p.filename().string());
+  } else {
+    ImGuiWidgets::Notify(theme::Signal::warning,
+                         "saved " + p.filename().string() + ", " +
+                             std::to_string(bundle.missing.size()) +
+                             " image(s) missing");
+  }
   return true;
 }
 
@@ -2128,7 +2144,6 @@ void reset_for_relaunch() {
   g_bundle_session = false;
   g_bundle_name.clear();
   g_serverless_session = false;
-  g_error_message.clear();
   g_request_relaunch = false;
   rmf_client_disconnect();
   g_phase = ConnPhase::Modal;
@@ -2147,11 +2162,14 @@ void native_save() {
     return;
   std::ofstream out(g_native_yaml_path, std::ios::trunc);
   if (!out) {
-    g_error_message = "cannot write " + g_native_yaml_path;
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "cannot write " + g_native_yaml_path);
     return;
   }
   out << imrmf::map_editor::serialize_building(g_building);
   g_state.dirty = false;
+  const std::string name = fs::path(g_native_yaml_path).filename().string();
+  ImGuiWidgets::Notify(theme::Signal::success, "saved " + name);
 }
 
 #endif // __EMSCRIPTEN__
@@ -2197,12 +2215,8 @@ void draw_fs_browser(float height, char *target = nullptr,
   ImGui::TextDisabled("Pick a directory below or paste an absolute path.");
 
   ImGui::Spacing();
-  if (g_fs.loading) {
+  if (g_fs.loading)
     ImGui::TextDisabled("loading...");
-  } else if (!g_fs.error.empty()) {
-    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                       g_fs.error.c_str());
-  }
 
   ImGui::Text("Current:");
   ImGui::SameLine();
@@ -2258,7 +2272,6 @@ void draw_fs_browser(float height, char *target = nullptr,
 std::map<std::string, std::vector<unsigned char>> g_bundle_staging;
 std::vector<unsigned char> g_bundle_bytes;
 std::string g_bundle_filename;
-std::string g_bundle_error;
 
 // Object URLs so the worker path decodes off the render thread. A 10 MB png
 // decoded inline in wasm stalls the frame and skips the 2048 px downscale.
@@ -2443,7 +2456,6 @@ EM_JS(void, rmf_js_download_map,
 void start_browser_download() {
   g_bundle_staging.clear();
   g_bundle_bytes.clear();
-  g_bundle_error.clear();
   g_bundle_filename =
       (g_building_id.empty() ? std::string("map") : g_building_id) +
       imrmf::map_editor::kBundleExtension;
@@ -2470,7 +2482,7 @@ void start_browser_download() {
       joined += '\n';
     joined += p;
   }
-  g_state.status_message = "packing map...";
+  ImGuiWidgets::Notify(theme::Signal::info, "packing map...");
   rmf_js_download_map(g_server_url.c_str(), g_building_id.c_str(),
                       joined.c_str(), g_bundle_filename.c_str());
 }
@@ -2507,9 +2519,6 @@ void draw_save_bundle_modal() {
   }
   if (ImGui::SmallButton("refresh"))
     request_fs_list(g_fs.current_path);
-  if (!g_fs.error.empty())
-    ImGuiWidgets::StatusLine(theme::Signal::danger, g_fs.error.c_str());
-
   ImGui::BeginChild("##save_dirs", ImVec2(0, 200.0f), true);
   for (const auto &e : g_fs.entries) {
     if (e.is_dir) {
@@ -2568,12 +2577,14 @@ void request_download_map() {
 // images to JS to PUT. The poll loop takes it from there.
 void start_create_from_source(const std::string &id) {
   if (!building_id_is_valid(id)) {
-    g_error_message = "name must be letters, digits, - or _ (max 64)";
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "name must be letters, digits, - or _ (max 64)");
     return;
   }
   if (std::find(g_buildings.begin(), g_buildings.end(), id) !=
       g_buildings.end()) {
-    g_error_message = "\"" + id + "\" already exists on this backend";
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         "\"" + id + "\" already exists on this backend");
     return;
   }
   const std::string name = g_create_source;
@@ -2581,15 +2592,15 @@ void start_create_from_source(const std::string &id) {
       name.size() > 7 && name.compare(name.size() - 7, 7, ".rmfmap") == 0;
   const bool want_bundle = g_create_format_idx == 1;
   if (want_bundle != looks_bundle) {
-    g_error_message = want_bundle
-                          ? "that is not a .rmfmap, switch Format to "
-                            "building.yaml"
-                          : "that is a .rmfmap, switch Format to Full map";
+    ImGuiWidgets::Notify(
+        theme::Signal::danger,
+        want_bundle ? "that is not a .rmfmap, switch Format to building.yaml"
+                    : "that is a .rmfmap, switch Format to Full map");
     return;
   }
   const MapSource src = read_map_source(g_create_bytes, want_bundle);
   if (!src.ok) {
-    g_error_message = src.error;
+    ImGuiWidgets::Notify(theme::Signal::danger, src.error);
     return;
   }
   for (const imrmf::map_editor::BundleAsset &a : src.assets) {
@@ -2637,24 +2648,17 @@ void draw_create_source_picker() {
                           " Choose a building.yaml")) {
       const std::string picked = pick_open_path(
           want_bundle ? FileKind::MapBundle : FileKind::BuildingYaml);
-      if (!picked.empty()) {
+      if (!picked.empty())
         set_field(g_create_source, picked);
-        g_error_message.clear();
-      }
     }
     if (g_create_source[0])
       ImGui::TextDisabled("%s", g_create_source);
   } else {
-    const std::string before = g_create_source;
     draw_fs_browser(160.0f, g_create_source, sizeof(g_create_source),
                     /*accept_yaml=*/!want_bundle,
                     /*accept_bundle=*/want_bundle);
-    if (before != g_create_source)
-      g_error_message.clear();
   }
 #endif
-  if (!g_create_status.empty())
-    ImGuiWidgets::StatusLine(theme::Signal::warning, g_create_status.c_str());
 }
 
 // One dialog for both front ends. Only the OS file picker differs.
@@ -2690,10 +2694,6 @@ void draw_open_dialog_body() {
         "keep changes.");
     ImGui::PopStyleColor();
 #endif
-    if (!g_error_message.empty()) {
-      ImGui::Spacing();
-      ImGuiWidgets::StatusLine(theme::Signal::danger, g_error_message.c_str());
-    }
     if (ImGuiWidgets::ModalActions("Reconnect") == 1)
       start_list_buildings();
     return;
@@ -2732,7 +2732,6 @@ void draw_open_dialog_body() {
       if (kind >= 0 && kind != g_form.kind_idx) {
         g_form.kind_idx = kind;
         g_buildings.clear();
-        g_error_message.clear();
 #ifndef __EMSCRIPTEN__
         if (g_form.kind_idx == 1)
           native_probe_server_config();
@@ -2744,10 +2743,8 @@ void draw_open_dialog_body() {
         const int fmt = ImGuiWidgets::ButtonGroupSelector(
             {"building.yaml", "Full map (.rmfmap)"}, g_form.local_format_idx,
             ImVec2(0, 0));
-        if (fmt >= 0 && fmt != g_form.local_format_idx) {
+        if (fmt >= 0 && fmt != g_form.local_format_idx)
           g_form.local_format_idx = fmt;
-          g_error_message.clear();
-        }
       }
 
       if (!local) {
@@ -2829,11 +2826,6 @@ void draw_open_dialog_body() {
         ImGui::Spacing();
         if (ImGui::Button(ICON_MDI_FOLDER_OPEN " Choose a .rmfmap file"))
           rmf_js_open_map_bundle();
-        if (!g_error_message.empty()) {
-          ImGui::Spacing();
-          ImGuiWidgets::StatusLine(theme::Signal::danger,
-                                   g_error_message.c_str());
-        }
         return;
       }
 #endif
@@ -2881,7 +2873,6 @@ void draw_open_dialog_body() {
 #else
         g_buildings.clear();
         g_backend_mounted = false;
-        g_error_message.clear();
         g_phase = ConnPhase::Modal;
 #endif
         return;
@@ -2901,10 +2892,8 @@ void draw_open_dialog_body() {
         ImGuiWidgets::FormRow("Building");
         const int m = ImGuiWidgets::ButtonGroupSelector(
             {"Open existing", "Create new"}, g_building_mode, ImVec2(0, 0));
-        if (m >= 0 && m != g_building_mode) {
+        if (m >= 0 && m != g_building_mode)
           g_building_mode = m;
-          g_error_message.clear();
-        }
       }
 
       if (g_building_mode == 0) {
@@ -2925,10 +2914,8 @@ void draw_open_dialog_body() {
       } else {
         ImGuiWidgets::FormRow("New name");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        // Editing anything here invalidates whatever the last attempt said.
-        if (ImGui::InputText("##new_name", g_form.building_id,
-                             sizeof(g_form.building_id)))
-          g_error_message.clear();
+        ImGui::InputText("##new_name", g_form.building_id,
+                         sizeof(g_form.building_id));
         if (g_form.building_id[0] &&
             !building_id_is_valid(g_form.building_id)) {
           ImGuiWidgets::FormRow("");
@@ -2936,9 +2923,8 @@ void draw_open_dialog_body() {
                              "letters, digits, - and _ only");
         }
         ImGuiWidgets::FormRow("Contents");
-        if (ImGui::Checkbox("Start from a map file I already have",
-                            &g_create_from_file))
-          g_error_message.clear();
+        ImGui::Checkbox("Start from a map file I already have",
+                        &g_create_from_file);
         if (g_create_from_file) {
           ImGuiWidgets::FormRow("Format");
           const int fmt = ImGuiWidgets::ButtonGroupSelector(
@@ -2951,7 +2937,6 @@ void draw_open_dialog_body() {
 #ifdef __EMSCRIPTEN__
             g_create_bytes.clear();
 #endif
-            g_error_message.clear();
           }
         }
       }
@@ -2968,11 +2953,6 @@ void draw_open_dialog_body() {
                          "start from an empty map.");
       ImGui::PopStyleColor();
     }
-  }
-
-  if (!g_error_message.empty()) {
-    ImGui::Spacing();
-    ImGuiWidgets::StatusLine(theme::Signal::danger, g_error_message.c_str());
   }
 
   // Desktop reads local files itself, the browser goes through the server.
@@ -3029,8 +3009,9 @@ void draw_open_dialog_body() {
     if (mounted) {
       if (g_building_mode == 1) {
         if (!building_id_is_valid(g_form.building_id)) {
-          g_error_message = "give the new building a name of letters, digits, "
-                            "- or _";
+          ImGuiWidgets::Notify(
+              theme::Signal::danger,
+              "give the new building a name of letters, digits, - or _");
         } else if (g_create_from_file) {
 #ifdef __EMSCRIPTEN__
           start_create_from_source(g_form.building_id);
@@ -3063,7 +3044,8 @@ void draw_open_dialog_body() {
         set_field(g_form.local_path, path);
       }
       if (path.empty())
-        g_error_message = "choose where the new file should go";
+        ImGuiWidgets::Notify(theme::Signal::danger,
+                             "choose where the new file should go");
       else if (bundle)
         native_create_bundle(path);
       else
@@ -3074,7 +3056,8 @@ void draw_open_dialog_body() {
     if (g_form.building_id[0])
       start_create_building(g_form.building_id);
     else
-      g_error_message = "give the new building a name";
+      ImGuiWidgets::Notify(theme::Signal::danger,
+                           "give the new building a name");
     return;
   default:
     return;
@@ -3229,6 +3212,8 @@ void begin_frame() {
 }
 
 void end_frame() {
+  // In here, not per loop, so no frame can forget it or draw over it.
+  ImGuiWidgets::DrawNotifications();
   ImGui::Render();
   int w, h;
   glfwGetFramebufferSize(g_window, &w, &h);
@@ -3441,6 +3426,8 @@ bool run_launcher() {
       const ImGuiWindow *win = ImGui::GetCurrentWindow();
       wanted_height = win->ContentSizeIdeal.y + win->WindowPadding.y * 2.0f +
                       win->DecoOuterSizeY1 + win->DecoOuterSizeY2;
+      // Room for the notification stack, or cards cover the buttons.
+      wanted_height += ImGuiWidgets::NotificationsHeight();
       ImGuiWidgets::EndModal();
     }
     end_frame();
@@ -3513,14 +3500,18 @@ EMSCRIPTEN_KEEPALIVE int rmf_bundle_build() {
           return true;
         });
     g_bundle_bytes = imrmf::map_editor::write_bundle(bundle);
-    g_state.status_message = bundle.missing.empty()
-                                 ? "downloaded " + g_bundle_filename
-                                 : "downloaded " + g_bundle_filename + " — " +
-                                       std::to_string(bundle.missing.size()) +
-                                       " image(s) missing";
+    if (bundle.missing.empty()) {
+      ImGuiWidgets::Notify(theme::Signal::success,
+                           "downloaded " + g_bundle_filename);
+    } else {
+      ImGuiWidgets::Notify(theme::Signal::warning,
+                           "downloaded " + g_bundle_filename + ", " +
+                               std::to_string(bundle.missing.size()) +
+                               " image(s) missing");
+    }
   } catch (const std::exception &e) {
-    g_bundle_error = e.what();
-    g_state.status_message = std::string("pack failed: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("pack failed: ") + e.what());
     g_bundle_bytes.clear();
     return 0;
   }
@@ -3541,7 +3532,6 @@ EMSCRIPTEN_KEEPALIVE void rmf_bundle_release() {
 // Nothing is validated or sent until the user presses Create.
 EMSCRIPTEN_KEEPALIVE void rmf_create_source_set(const unsigned char *data,
                                                 int len, const char *name) {
-  g_create_status.clear();
   g_create_bytes.clear();
   g_create_source[0] = '\0';
   if (!data || len <= 0)
@@ -3554,14 +3544,15 @@ EMSCRIPTEN_KEEPALIVE void rmf_create_source_set(const unsigned char *data,
 EMSCRIPTEN_KEEPALIVE int rmf_bundle_open(const unsigned char *data, int len,
                                          const char *name) {
   if (!data || len <= 0) {
-    g_error_message = "empty file";
+    ImGuiWidgets::Notify(theme::Signal::danger, "empty file");
     return 0;
   }
   MapBundle bundle;
   try {
     bundle = imrmf::map_editor::read_bundle(data, (std::size_t)len);
   } catch (const std::exception &e) {
-    g_error_message = std::string("not a usable map bundle: ") + e.what();
+    ImGuiWidgets::Notify(theme::Signal::danger,
+                         std::string("not a usable map bundle: ") + e.what());
     return 0;
   }
 
@@ -3594,10 +3585,10 @@ EMSCRIPTEN_KEEPALIVE int rmf_bundle_open(const unsigned char *data, int len,
       });
   g_view = std::make_unique<EditorView>(std::move(provider), g_building_id);
 
-  g_error_message.clear();
   if (!bundle.missing.empty()) {
-    g_state.status_message = std::to_string(bundle.missing.size()) +
-                             " image(s) missing from the bundle";
+    ImGuiWidgets::Notify(theme::Signal::warning,
+                         std::to_string(bundle.missing.size()) +
+                             " image(s) missing from the bundle");
   }
   g_phase = ConnPhase::Connected;
   return 1;
@@ -3653,7 +3644,21 @@ int main(int argc, char **argv) {
                      ICON_MDI_FILE_IMAGE,
                      ICON_MDI_ARROW_UP,
                      ICON_MDI_REFRESH,
-                     ICON_MDI_UPLOAD},
+                     ICON_MDI_UPLOAD,
+                     ICON_MDI_DOWNLOAD,
+                     ICON_MDI_CONTENT_SAVE,
+                     ICON_MDI_EYE,
+                     ICON_MDI_CIRCLE_MEDIUM,
+                     ICON_MDI_ALERT,
+                     ICON_MDI_ALERT_CIRCLE,
+                     ICON_MDI_ALERT_OUTLINE,
+                     ICON_MDI_FOLDER_ALERT,
+                     ICON_MDI_CHECK_CIRCLE,
+                     ICON_MDI_CLOSE_CIRCLE,
+                     ICON_MDI_INFORMATION,
+                     ICON_MDI_EV_STATION,
+                     ICON_MDI_PARKING,
+                     ICON_MDI_PAUSE_CIRCLE},
                     {"materialdesignicons-webfont.ttf", mdi.c_str(),
                      "ui/fonts/materialdesignicons-webfont.ttf"});
 

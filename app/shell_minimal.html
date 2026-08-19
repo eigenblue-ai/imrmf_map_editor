@@ -40,10 +40,6 @@
         margin: 0;
         color: #fff;
       }
-      #header #loading {
-        font-size: 12px;
-        color: rgba(255, 255, 255, 0.6);
-      }
       #canvas-container {
         flex: 1;
         min-height: 0;
@@ -56,25 +52,55 @@
         height: 100%;
         outline: none;
       }
-      .spinner {
+      #loading {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        width: 50px;
-        height: 50px;
-        margin: -25px 0 0 -25px;
-        border: 4px solid rgba(255, 255, 255, 0.1);
-        border-top: 4px solid #fff;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #0e0f14;
+        color: #9e86a6;
+        font-size: 13px;
       }
-      @keyframes spin {
-        100% {
-          transform: rotate(360deg);
-        }
-      }
-      .hidden {
+      #loading.done {
         display: none;
+      }
+      #bar {
+        position: relative;
+        width: 220px;
+        height: 4px;
+        border-radius: 2px;
+        background: #292e42;
+        overflow: hidden;
+      }
+      #fill {
+        position: absolute;
+        inset: 0;
+        width: 0;
+        background: #e7ff00;
+        transition: width 0.2s ease-out;
+      }
+      /* Some phases report no fraction, and a bar stuck at 0% reads as a
+         hang. Sweep until there is a real number to show. */
+      #bar.waiting #fill {
+        width: 35%;
+        transition: none;
+        animation: sweep 1.1s ease-in-out infinite;
+      }
+      #bar.failed #fill {
+        width: 100%;
+        background: #ff453a;
+        animation: none;
+      }
+      @keyframes sweep {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(285%);
+        }
       }
       #output {
         display: none;
@@ -85,22 +111,60 @@
     <div id="container">
       <div id="header">
         <h1>RMF Map Editor</h1>
-        <span id="loading">Loading...</span>
       </div>
       <div id="canvas-container">
-        <div id="spinner" class="spinner"></div>
         <canvas
           id="canvas"
           oncontextmenu="event.preventDefault()"
           tabindex="-1"
         ></canvas>
+        <div id="loading">
+          <div id="bar" class="waiting"><div id="fill"></div></div>
+          <span id="loading-text">Loading</span>
+        </div>
       </div>
     </div>
     <div id="output"></div>
 
     <script>
-      var spinnerElement = document.getElementById("spinner");
       var loadingElement = document.getElementById("loading");
+      var loadingText = document.getElementById("loading-text");
+      var barElement = document.getElementById("bar");
+      var fillElement = document.getElementById("fill");
+
+      // Emscripten reports a sentence with byte or dependency counts in it,
+      // which mean nothing to a reader. The two phases each count from zero, so
+      // the label says which is running or the refill looks like lost progress.
+      var PHASES = { download: "Downloading", deps: "Preparing" };
+      var phaseNow = null;
+
+      function progress(phase, fraction) {
+        if (phase !== phaseNow) {
+          phaseNow = phase;
+          loadingText.textContent = PHASES[phase];
+          // Snap back rather than animate backwards, which reads as progress
+          // lost. The offsetWidth read is what applies the suppression.
+          fillElement.style.transition = "none";
+          fillElement.style.width = "0";
+          void fillElement.offsetWidth;
+          fillElement.style.transition = "";
+        }
+        if (fraction === null) {
+          barElement.classList.add("waiting");
+          return;
+        }
+        barElement.classList.remove("waiting");
+        fillElement.style.width =
+          Math.round(Math.min(1, Math.max(0, fraction)) * 100) + "%";
+      }
+
+      function fractionOf(text) {
+        var m = /\((\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\)/.exec(text);
+        if (!m) return null;
+        var total = parseFloat(m[2]);
+        return total > 0 ? parseFloat(m[1]) / total : null;
+      }
+
       var Module = {
         canvas: document.getElementById("canvas"),
         // Cache-bust so a plain reload gets the latest build.
@@ -113,25 +177,36 @@
         printErr: function (t) {
           console.error(t);
         },
+        // An empty string means loading finished.
         setStatus: function (text) {
-          if (text === "") {
-            spinnerElement.classList.add("hidden");
-            loadingElement.classList.add("hidden");
-          } else {
-            spinnerElement.classList.remove("hidden");
-            loadingElement.classList.remove("hidden");
+          if (!text) {
+            loadingElement.classList.add("done");
+            return;
           }
+          loadingElement.classList.remove("done");
+          progress("download", fractionOf(text));
         },
         totalDependencies: 0,
         monitorRunDependencies: function (left) {
           this.totalDependencies = Math.max(this.totalDependencies, left);
-          Module.setStatus(left ? "Preparing..." : "");
+          if (!left) {
+            Module.setStatus("");
+            return;
+          }
+          loadingElement.classList.remove("done");
+          progress(
+            "deps",
+            (this.totalDependencies - left) / this.totalDependencies,
+          );
         },
       };
       Module.setStatus("Downloading...");
       window.onerror = function () {
-        spinnerElement.classList.add("hidden");
-        loadingElement.classList.add("hidden");
+        // Say so rather than hide: a blank canvas explains nothing.
+        loadingElement.classList.remove("done");
+        barElement.classList.remove("waiting");
+        barElement.classList.add("failed");
+        loadingText.textContent = "The editor failed to start, see the console";
       };
     </script>
 

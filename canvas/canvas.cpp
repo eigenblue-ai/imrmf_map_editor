@@ -7,23 +7,34 @@
 #include "canvas/gl.hpp"
 #include "canvas/texture_decode.hpp"
 
+#include "ui/IconsMaterialDesignIcons.h"
+#include "ui/widgets.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 namespace imrmf::map_editor::canvas {
 
+namespace {
+
+bool param_flag(const Vertex &v, const char *k) {
+  auto it = v.params.find(k);
+  return it != v.params.end() && it->second.type == ParamType::BOOL &&
+         it->second.b;
+}
+
+bool param_str(const Vertex &v, const char *k) {
+  auto it = v.params.find(k);
+  return it != v.params.end() && it->second.type == ParamType::STRING &&
+         !it->second.s.empty();
+}
+
+} // namespace
+
 ImU32 vertex_color(const Vertex &v) {
-  auto flag = [&](const char *k) {
-    auto it = v.params.find(k);
-    return it != v.params.end() && it->second.type == ParamType::BOOL &&
-           it->second.b;
-  };
-  auto has_str = [&](const char *k) {
-    auto it = v.params.find(k);
-    return it != v.params.end() && it->second.type == ParamType::STRING &&
-           !it->second.s.empty();
-  };
+  auto flag = [&](const char *k) { return param_flag(v, k); };
+  auto has_str = [&](const char *k) { return param_str(v, k); };
   if (flag("is_charger"))
     return IM_COL32(220, 60, 60, 255);
   if (flag("is_parking_spot"))
@@ -37,6 +48,22 @@ ImU32 vertex_color(const Vertex &v) {
   if (flag("is_passthrough_point"))
     return IM_COL32(170, 170, 170, 255);
   return IM_COL32(230, 230, 230, 255);
+}
+
+// One dot cannot show several roles at once, so they go under the name.
+std::string vertex_badges(const Vertex &v) {
+  std::string out;
+  if (param_flag(v, "is_charger"))
+    out += ICON_MDI_EV_STATION;
+  if (param_flag(v, "is_parking_spot"))
+    out += ICON_MDI_PARKING;
+  if (param_str(v, "pickup_dispenser"))
+    out += ICON_MDI_UPLOAD;
+  if (param_str(v, "dropoff_ingestor"))
+    out += ICON_MDI_DOWNLOAD;
+  if (param_flag(v, "is_holding_point"))
+    out += ICON_MDI_PAUSE_CIRCLE;
+  return out;
 }
 
 ImU32 lane_color(const Lane &l) {
@@ -160,6 +187,8 @@ void fill_simple_polygon(ImDrawList *dl, std::vector<ImVec2> pts, ImU32 col) {
 }
 
 constexpr float kVertexNameMinScale = 1.0f;
+// Above the UI font: these sit on the map, not in a panel.
+constexpr float kVertexNameSize = 19.0f;
 
 } // namespace
 
@@ -522,7 +551,8 @@ void MapCanvas::draw(const Building &building, int level_idx,
             pd->second.type == ParamType::INT ? pd->second.i : pd->second.d;
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.2f m", meters);
-        draw_list_->AddText(
+        ImGuiWidgets::DrawTextShadowed(
+            draw_list_,
             ImVec2((a.x + b.x) * 0.5f + 4.0f, (a.y + b.y) * 0.5f - 14.0f), col,
             buf);
       }
@@ -543,10 +573,20 @@ void MapCanvas::draw(const Building &building, int level_idx,
         }
       }
       draw_list_->AddCircleFilled(p, vr, vc);
-      if (opts.show_vertex_names && !v.name.empty() &&
-          view_state_.scale >= kVertexNameMinScale) {
-        draw_list_->AddText(ImVec2(p.x + 6.0f, p.y - 8.0f),
-                            IM_COL32(220, 220, 220, 255), v.name.c_str());
+      // A pale dot on a pale floorplan is not there at all.
+      draw_list_->AddCircle(p, vr, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+      if (opts.show_vertex_names && view_state_.scale >= kVertexNameMinScale) {
+        const ImVec2 at(p.x + 12.0f, p.y - 9.0f);
+        constexpr ImU32 label = IM_COL32(255, 255, 255, 255);
+        if (!v.name.empty())
+          ImGuiWidgets::DrawTextShadowed(draw_list_, at, label, v.name.c_str(),
+                                         kVertexNameSize);
+        const std::string badges = vertex_badges(v);
+        if (!badges.empty()) {
+          const float below = v.name.empty() ? 0.0f : kVertexNameSize;
+          ImGuiWidgets::DrawTextShadowed(draw_list_, ImVec2(at.x, at.y + below),
+                                         label, badges.c_str());
+        }
       }
     }
   }

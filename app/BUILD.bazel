@@ -11,6 +11,7 @@ _APP_DEPS = [
     "//model:map_bundle",
     "//ui:core",
     "//ui:icons",
+    "//ui:notifications",
     "//view",
     "@imgui_docking//:imgui",
     "@imgui_docking//:platform-glfw",

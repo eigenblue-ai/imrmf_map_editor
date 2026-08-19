@@ -24,6 +24,18 @@ cc_library(
     ],
 )
 
+# Transient message stack, drawn on top of everything once per frame.
+cc_library(
+    name = "notifications",
+    hdrs = ["notifications.hpp"],
+    strip_include_prefix = "/",
+    deps = [
+        ":icons",
+        ":theme",
+        "@imgui_docking//:imgui",
+    ],
+)
+
 # Bundled Inter font + a loader. Add :fonts to your binary's data.
 cc_library(
     name = "font",

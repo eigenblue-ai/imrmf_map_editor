@@ -8,6 +8,7 @@
 #include "imgui/misc/cpp/imgui_stdlib.h"
 
 #include "ui/icons.hpp"
+#include "ui/notifications.hpp"
 #include "ui/widgets.hpp"
 
 #include "model/asset_paths.hpp"
@@ -2030,7 +2031,8 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
                         : IM_COL32(20, 20, 20, 220),
                     sel ? 2.5f : 1.5f);
         if (!f.name.empty())
-          dl->AddText(ImVec2(p.x + 8.0f, p.y - 8.0f), col, f.name.c_str());
+          ImGuiWidgets::DrawTextShadowed(dl, ImVec2(p.x + 13.0f, p.y - 8.0f),
+                                         col, f.name.c_str());
       }
     }
   };
@@ -2106,7 +2108,8 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
                          ImGuiButtonFlags_MouseButtonLeft |
                              ImGuiButtonFlags_MouseButtonMiddle);
   ImGuiIO &io = ImGui::GetIO();
-  bool hovered = ImGui::IsItemHovered();
+  bool hovered =
+      ImGui::IsItemHovered() && !ImGuiWidgets::NotificationsHovered();
   ImVec2 mouse = io.MousePos;
 
   // Direct-map layer align bypasses the regular tool pipeline.
@@ -2327,8 +2330,6 @@ void EditorView::draw_canvas(Building &building, EditorState &state) {
       ghost = canvas_.world_to_screen(split.x, split.y);
       dl->AddLine(la, lb, IM_COL32(255, 200, 80, 150), 4.0f);
       dl->AddCircle(ghost, 7.0f, IM_COL32(255, 200, 80, 255), 0, 2.0f);
-      dl->AddText(ImVec2(ghost.x + 12.0f, ghost.y - 20.0f),
-                  IM_COL32(255, 200, 80, 230), "split here");
     }
     if (state.mode == Mode::Lane && state.pending_lane_start >= 0 &&
         state.pending_lane_start < (int)level.vertices.size()) {
@@ -2918,8 +2919,8 @@ void EditorView::draw_layer_browse_modal(Building &building,
     ImGui::OpenPopup("Browse layers");
     state.open_layer_browse = false;
     state.browse_relist = true;
-    state.browse_status.clear();
     state.browse_last_upload.clear();
+    state.browse_last_error.clear();
   }
   if (!ImGuiWidgets::BeginModal("Browse layers", 460.0f))
     return;
@@ -2949,16 +2950,20 @@ void EditorView::draw_layer_browse_modal(Building &building,
     mev_asset_upload(building_id_.c_str(), state.browse_subdir.c_str());
 
   {
-    std::string uc = mev_asset_up_code();
-    std::string un = mev_asset_up_name();
-    if (uc == "busy") {
-      state.browse_status = "Uploading " + un;
-    } else if (uc == "ok" && un != state.browse_last_upload) {
-      state.browse_last_upload = un;
-      state.browse_status = "Uploaded " + un;
-      state.browse_relist = true;
-    } else if (uc == "err") {
-      state.browse_status = "Upload failed: " + un;
+    const std::string uc = mev_asset_up_code();
+    const std::string un = mev_asset_up_name();
+    // Polled every frame, so key on the outcome to report each one once.
+    const std::string outcome = uc + "|" + un;
+    if (uc != "idle" && outcome != state.browse_last_upload) {
+      state.browse_last_upload = outcome;
+      if (uc == "busy") {
+        ImGuiWidgets::Notify(theme::Signal::info, "uploading " + un);
+      } else if (uc == "ok") {
+        ImGuiWidgets::Notify(theme::Signal::success, "uploaded " + un);
+        state.browse_relist = true;
+      } else if (uc == "err") {
+        ImGuiWidgets::Notify(theme::Signal::danger, "upload failed: " + un);
+      }
     }
   }
 
@@ -2968,9 +2973,16 @@ void EditorView::draw_layer_browse_modal(Building &building,
   if (code == "busy") {
     ImGui::TextDisabled("Loading...");
   } else if (code == "err") {
-    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.33f, 1.0f), "%s",
-                       mev_assets_payload());
+    const std::string err = mev_assets_payload();
+    // Polled every frame, so report each failure once.
+    if (err != state.browse_last_error) {
+      state.browse_last_error = err;
+      ImGuiWidgets::Notify(theme::Signal::danger,
+                           "could not list files: " + err);
+    }
+    ImGui::TextDisabled("Listing failed.");
   } else if (code == "ok") {
+    state.browse_last_error.clear();
     auto entries = browse_parse(mev_assets_payload());
     if (entries.empty())
       ImGui::TextDisabled("(empty)");
@@ -3010,8 +3022,6 @@ void EditorView::draw_layer_browse_modal(Building &building,
   }
   ImGui::EndChild();
 
-  if (!state.browse_status.empty())
-    ImGui::TextDisabled("%s", state.browse_status.c_str());
   if (ImGuiWidgets::ModalActions("Close"))
     ImGui::CloseCurrentPopup();
   ImGuiWidgets::EndModal();
@@ -4147,32 +4157,6 @@ void EditorView::draw_attribute_panel(Building &building, EditorState &state) {
   ImGui::PopID();
 }
 
-void EditorView::draw_status_bar(const EditorState &state) {
-  (void)state;
-
-#ifdef __EMSCRIPTEN__
-  const char *yjs = map_editor_yjs_status();
-  if (yjs && yjs[0]) {
-    bool ok = std::strcmp(yjs, "connected") == 0 && map_editor_yjs_synced();
-    const theme::Signal sig = ok ? theme::Signal::success
-                              : std::strcmp(yjs, "connecting") == 0
-                                  ? theme::Signal::warning
-                                  : theme::Signal::danger;
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::signal_color(sig));
-    ImGui::Text("collab: %s%s", yjs, ok ? " (synced)" : "");
-    ImGui::PopStyleColor();
-    std::free((void *)yjs);
-  } else if (yjs) {
-    std::free((void *)yjs);
-  }
-#endif
-
-  if (!state.status_message.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("| %s", state.status_message.c_str());
-  }
-}
-
 namespace {
 
 constexpr ImU32 kFidColorRef = IM_COL32(110, 220, 120, 255);
@@ -4189,7 +4173,8 @@ void draw_fid_marker(ImDrawList *dl, ImVec2 p, const char *name, ImU32 col,
   dl->AddQuad(a, b, c, d, selected ? kFidColorSel : IM_COL32(20, 20, 20, 220),
               selected ? 2.5f : 1.5f);
   if (name && *name)
-    dl->AddText(ImVec2(p.x + 8.0f, p.y - 8.0f), col, name);
+    ImGuiWidgets::DrawTextShadowed(dl, ImVec2(p.x + 13.0f, p.y - 8.0f), col,
+                                   name);
 }
 
 double default_target_scale(const Building &building, int tgt_idx) {
@@ -4466,7 +4451,8 @@ void EditorView::draw_align_floors_canvas(Building &building,
   ImGui::InvisibleButton("##align_floors_canvas", canvas_.canvas_size(),
                          ImGuiButtonFlags_MouseButtonLeft |
                              ImGuiButtonFlags_MouseButtonMiddle);
-  bool hovered = ImGui::IsItemHovered();
+  bool hovered =
+      ImGui::IsItemHovered() && !ImGuiWidgets::NotificationsHovered();
   handle_floor_align_input(building, state, hovered);
 }
 
@@ -4717,10 +4703,6 @@ void EditorView::draw_version_strip(EditorState &state,
   if (!top_bar.has_server) {
     // Nothing else in this strip means anything without a server.
     download_button(/*same_line=*/false);
-    if (!state.status_message.empty()) {
-      ImGui::SameLine();
-      ImGui::TextDisabled("%s", state.status_message.c_str());
-    }
     ImGui::EndChild();
     ImGui::PopStyleColor();
     return;
@@ -4809,11 +4791,6 @@ void EditorView::draw_version_strip(EditorState &state,
     ImGuiWidgets::EndModal();
   }
 
-  if (!state.snapshot_status.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", state.snapshot_status.c_str());
-  }
-
   // Deploying into an unused name is how a branch comes into being.
   auto new_branch_row = [&state](const std::function<void()> &deploy) {
     ImGui::Separator();
@@ -4898,16 +4875,7 @@ void EditorView::draw_version_strip(EditorState &state,
     }
   }
 
-  if (!state.deploy_status.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", state.deploy_status.c_str());
-  }
   download_button(/*same_line=*/true);
-  // draw_status_bar is browser-only, so this is the desktop's only feedback.
-  if (!state.status_message.empty()) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", state.status_message.c_str());
-  }
   ImGui::EndChild();
   ImGui::PopStyleColor();
 }

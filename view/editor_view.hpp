@@ -72,7 +72,6 @@ struct EditorState {
 
   std::string etag;
   SaveState save_state = SaveState::Idle;
-  std::string status_message;
 
   int selected_layer = -1;
 
@@ -106,8 +105,8 @@ struct EditorState {
   bool open_layer_browse = false; // request to open the modal
   std::string browse_subdir;      // folder within the building asset dir
   bool browse_relist = false;     // trigger a fresh /assets/list
-  std::string browse_status;      // upload / error status line
-  std::string browse_last_upload; // name of the last upload we refreshed on
+  std::string browse_last_upload; // last upload outcome already reported
+  std::string browse_last_error;  // last listing failure already reported
 
   int pending_commit_vertex = -1;
   int pending_commit_lane = -1;
@@ -144,7 +143,6 @@ struct EditorState {
   std::string snapshot_request_load;
   std::string snapshot_request_unload;
   std::string snapshot_request_restore;
-  std::string snapshot_status;
 
   std::string branch;
   std::vector<std::string> branches;
@@ -154,7 +152,6 @@ struct EditorState {
   std::string deploy_request_to;
   std::string deploy_latest_to;
   std::string deploy_new_branch;
-  std::string deploy_status;
 };
 
 struct TopBarHooks {
@@ -225,7 +222,6 @@ private:
   void draw_layer_browse_modal(Building &building, EditorState &state);
   void draw_attribute_panel(Building &building, EditorState &state);
   void draw_mutex_groups_panel(Building &building, EditorState &state);
-  void draw_status_bar(const EditorState &state);
 
   // Direct-map align mode for a single layer. Ctrl = fine/zoom-independent.
   void handle_align_input(Building &building, EditorState &state, bool hovered);

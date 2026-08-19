@@ -90,6 +90,25 @@ inline void StatusText(const char *icon, const char *text, theme::Signal s,
     ImGui::PopStyleColor();
 }
 
+// Text over imagery: a dark halo and the offset shadow a desktop icon has, so
+// a light floorplan cannot swallow it. size 0 keeps the current font size.
+inline void DrawTextShadowed(ImDrawList *dl, const ImVec2 &pos, ImU32 color,
+                             const char *text, float size = 0.0f) {
+  constexpr ImU32 halo = IM_COL32(0, 0, 0, 190);
+  constexpr ImU32 soft = IM_COL32(0, 0, 0, 90);
+  ImFont *font = ImGui::GetFont();
+  const float fs = size > 0.0f ? size : ImGui::GetFontSize();
+  auto at = [&](float dx, float dy, ImU32 col) {
+    dl->AddText(font, fs, ImVec2(pos.x + dx, pos.y + dy), col, text);
+  };
+  at(2.0f, 2.0f, soft);
+  at(-1.0f, 0.0f, halo);
+  at(1.0f, 0.0f, halo);
+  at(0.0f, -1.0f, halo);
+  at(0.0f, 1.0f, halo);
+  at(0.0f, 0.0f, color);
+}
+
 // Wrapped status line for async ops, colored by state.
 inline void StatusLine(theme::Signal s, const char *text) {
   ImGui::PushStyleColor(ImGuiCol_Text, theme::signal_color(s));

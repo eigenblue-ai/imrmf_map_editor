@@ -18,6 +18,7 @@ cc_library(
         "//model",
         "//model:asset_paths",
         "//ui:icons",
+        "//ui:notifications",
         "//ui:widgets",
         "@imgui_docking//:imgui",
         "@imgui_docking//:imgui_stdlib",
